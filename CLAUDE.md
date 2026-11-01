@@ -5,6 +5,27 @@ Read this before changing the map. Keep it short and correct it when it turns ou
 ## The situation
 The map grew by adding rule on top of rule, with later passes correcting earlier ones, and each climate adds more. A full rewrite is not planned. It gets cleaner slowly: every change follows the principles below and leaves the code it touches a little better.
 
+## Start here (state on 2026-11-01)
+Commits `0b584bc` to the latest are local on `main`, **not pushed**, and the version is still 11.0.16. The user tests next, with the Weevee mod on (the first tests ran with Lekmod Scion on, which isn't this map's usual mod).
+
+**The test copy:** the game plays `Assets\Maps\Weevee v11 working copy`, a plain copy of the tracked `.lua` files that does not update by itself. The working folder is on the Desktop. After every edit, copy the changed files over and tell the user, or move the working folder into `Assets\Maps` and delete the copy (never have both copies' helpers disagree: `include()` picks one by bare name).
+
+**Done, Standard only (Standard-Diagonal and other climates unchanged):**
+- `WV11*` helper names, so 10.5 and 11 can be installed side by side.
+- Front mountains: one column per side (10.5's column, `iW/2 - 4`), `iH * 25%` mountains. Before: five columns, 15 mountains, leftover tectonics mountains in two of the columns, and up to 4 peaks in the snow behind them.
+- No forest in the center snow barrier; snow elsewhere keeps forests.
+- Rivers ending on land walk on to water (`RepairDeadEndRivers`, ported from Lekmap); stuck: a one-tile lake, or near the front or a start the river is removed.
+- Dead on load fixed in the start finder: a best fallback scoring 0 left a start with no coordinates. An 18-tile region triggered it.
+
+**What the logs show so far:** the last load with Lekmod Scion on generated the whole map without a Lua error (`StartPlotSystem done`; `Dead-end rivers: 1 extended 1 steps 10`; `Standard center snow forests removed: 0`). Whether the game then opened fine is unknown: the user reports getting into games is not smooth, and suspects the mod. Not yet seen or judged by the user: the front, the rivers, the snow.
+
+**Next:**
+1. Ask how the test went with the Weevee mod. Test steps are on the Notion page "Tests" under "Weevee map 11". Any dead on load: read `Lua.log` before another game starts.
+2. Open: why a start region can be as small as 18 tiles. A weak start is now possible there; if those appear, reroll the map instead.
+3. Push and bump the version only when the user says so.
+
+**Notion:** this project shares the Lekmod workspace ("New Specs", "Tests", tracker row "Weevee 11 map, Standard: ..."). Specs for this map arrive on "New Specs".
+
 ## Principles
 1. **Fix the cause, don't add a correction.** Before adding a pass that strips, ensures or caps something, find what produced the wrong result and change that. If a correction is really needed (for example the stock game passes can't be changed), its comment says what it corrects.
 2. **Replacing means deleting.** When a new version of something works, remove the old one in the same commit. No `_UNUSED` copies, no switches kept "just in case": git has the history.

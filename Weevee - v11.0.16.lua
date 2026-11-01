@@ -286,7 +286,7 @@ function GetBarrierConfig()
 			mountainPct = 2,
 			hillPct = 24,
 			iceLakePermille = 0,
-			forestPct = 14,
+			forestPct = 0,
 			oasisPctOfFlat = 0,
 			-- Standard's front mountains use their own column-weighted ridge
 			-- design (see the front-mountain dispatch below), not the
@@ -12822,20 +12822,29 @@ function CountSnowForestNeighbors(plot)
 	return n;
 end
 ------------------------------------------------------------------------------
--- Standard: Snow is bare (flat, hills or mountain). Run last, because several
--- passes can put a forest there (the stock feature pass, AddForestToResource).
+-- Standard: the center snow barrier is bare (flat, hills or mountain). Forest
+-- placed by the barrier pass is already off (forestPct 0); this catches what the
+-- stock feature pass and AddForestToResource put there. Snow elsewhere keeps its
+-- forests.
 function StripStandardSnowForests()
 	if IsPlainStandardClimate() == false then
 		return
 	end
+	local iW, iH = Map.GetGridSize();
+	local wrapN, centerN = ResolveSnowWrapWidths();
+	local half = centerN / 2;
+	local mid = math.floor(iW / 2);
 	local n = 0;
-	for i, plot in Plots() do
-		if plot:GetTerrainType() == TerrainTypes.TERRAIN_SNOW and plot:GetFeatureType() == FeatureTypes.FEATURE_FOREST then
-			plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
-			n = n + 1;
+	for y = 0, iH - 1 do
+		for x = mid - half, mid + half - 1 do
+			local plot = Map.GetPlot(x, y);
+			if plot ~= nil and plot:GetTerrainType() == TerrainTypes.TERRAIN_SNOW and plot:GetFeatureType() == FeatureTypes.FEATURE_FOREST then
+				plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+				n = n + 1;
+			end
 		end
 	end
-	print("Standard snow forests removed:", n);
+	print("Standard center snow forests removed:", n);
 end
 ------------------------------------------------------------------------------
 function ForestTundraSeparatorResources()

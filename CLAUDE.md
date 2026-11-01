@@ -16,6 +16,9 @@ The map grew by adding rule on top of rule, with later passes correcting earlier
 8. **Say what was actually checked.** Syntax check, simulated outside the game, or seen in the game are different things; report which. Map changes count as done only once seen in a generated map.
 9. **Clean as you go, only nearby.** While working on a function, remove dead code and duplicates next to it. Larger cleanups get their own commit, and the backlog below gets updated.
 
+## Words we use
+- **Dead on load:** the game dies while loading a new game. Usually no player got a valid start. Look in `Documents\My Games\Sid Meier's Civilization 5\Logs\Lua.log` for `Runtime Error` lines from the map's files (before starting another game, it gets overwritten); `weevee_dbg.log` next to it shows the last step reached. A Lua error in generation stops the map outright: `GenerateMap`'s retry loop doesn't catch it.
+
 ## Facts
 - `Weevee - vX.Y.Z.lua` is the map script; the `WV11*.lua` files are helpers. `include()` finds files by bare name anywhere under `Assets`, so the helpers must keep the `WV11` prefix. Version bumps follow `VERSION-BUMP.txt`.
 - The working folder is `Desktop\civ mods\Weevee-v11.08-Map-main` (2026-11-01). `VERSION-BUMP.txt` still says it lives in `Assets\Maps`. The game only sees a copy or link placed there.
@@ -31,5 +34,6 @@ Take these when working nearby. Check each before deleting; a name could still b
 - **`StartPlotSystem` has 81 steps**, 17 of them `Strip*` and 9 `Ensure*`, and some run twice (`EnsureLuxuryQuota`, `StripIllegalWaterResources`, `ClampPlayerStartsOffEdges`, `NudgePlayerStartsMinDist`). These are the main place where corrections pile up on corrections.
 - **Climate checks:** about 180 `kind ==` / `kind ~=` checks, plus many `IsOasisClimate`, `IsBramble` and `IsTiltedMirrorAxis` calls.
 - **`PlaceFrontMountainField`** takes five column arguments; Standard passes the same column five times. A list of columns would be cleaner.
+- **`AssignStartingPlots:FindStart`'s nil-start check** never runs here: the map uses rectangular regions (`self.method = 3`), and `ChooseLocations` then calls `FindStartWithoutRegardToAreaID`.
 - **`DISABLE_FRONT_MOUNTAIN_RIDGES`** is a leftover testing switch.
 - **`Weevee - v11.0.15.lua`** is an old untracked copy in the folder that still includes the old `DEF*` helper names.

@@ -3004,7 +3004,7 @@ function AssignStartingPlots:FindStart(region_number)
 	-- We will compare all the fallback plots and choose the best to be the start plot.
 	local iNumFallbacks = table.maxn(fallback_plots);
 	if iNumFallbacks > 0 then
-		local best_fallback_score = 0
+		local best_fallback_score = -math.huge; -- a fallback scoring 0 or less must still win, or the start is nil
 		local best_fallback_x;
 		local best_fallback_y;
 		for loop, plotData in ipairs(fallback_plots) do
@@ -3325,7 +3325,7 @@ function AssignStartingPlots:FindCoastalStart(region_number)
 	-- We will compare all the fallback plots and choose the best to be the start plot.
 	local iNumFallbacks = table.maxn(fallback_plots);
 	if iNumFallbacks > 0 then
-		local best_fallback_score = 0
+		local best_fallback_score = -math.huge; -- a fallback scoring 0 or less must still win, or the start is nil
 		local best_fallback_x;
 		local best_fallback_y;
 		for loop, plotData in ipairs(fallback_plots) do
@@ -3505,7 +3505,7 @@ function AssignStartingPlots:FindStartWithoutRegardToAreaID(region_number, bMust
 	-- We will compare all the fallback plots and choose the best to be the start plot.
 	local iNumFallbacks = table.maxn(fallback_plots);
 	if iNumFallbacks > 0 then
-		local best_fallback_score = 0
+		local best_fallback_score = -math.huge; -- a fallback scoring 0 or less must still win, or the start is nil
 		local best_fallback_x;
 		local best_fallback_y;
 		for loop, plotData in ipairs(fallback_plots) do

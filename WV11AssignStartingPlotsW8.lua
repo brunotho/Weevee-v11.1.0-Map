@@ -12,7 +12,7 @@
 --	Copyright (c) 2010 Firaxis Games, Inc. All rights reserved.
 ------------------------------------------------------------------------------
 
-include("DEFMapmakerUtilitiesW");
+include("WV11MapmakerUtilitiesW");
 include("NaturalWondersCustomMethods");
 
 ------------------------------------------------------------------------------

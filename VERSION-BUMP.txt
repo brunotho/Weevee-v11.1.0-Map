@@ -72,3 +72,8 @@ Notes
 - Local uncommitted/unpushed edits are invisible to everyone else until
   step 5.
 - Do not bump by only editing the in-game title.
+- The helper scripts are prefixed WV11 (WV11MapGeneratorW8.lua, etc.)
+  so their include() names never match another map's DEF*.lua files.
+  Civ 5 resolves include() by bare file name across all of Assets, so
+  two map folders with the same helper names overwrite each other.
+  Keep these names when bumping; never rename them back to DEF*.

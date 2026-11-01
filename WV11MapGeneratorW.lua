@@ -7,7 +7,7 @@
 --	Copyright (c) 2010 Firaxis Games, Inc. All rights reserved.
 ------------------------------------------------------------------------------
 
-include("DEFAssignStartingPlotsW");
+include("WV11AssignStartingPlotsW");
 
 ------------------------------------------------------------------------------
 --	Various Map utility functions

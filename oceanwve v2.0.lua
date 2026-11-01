@@ -7,10 +7,10 @@
 --	Copyright (c) 2010 Firaxis Games, Inc. All rights reserved.
 ------------------------------------------------------------------------------
 
-include("DEFMapGeneratorW8");
-include("DEFMultilayeredFractalW");
-include("DEFFeatureGeneratorW");
-include("DEFTerrainGeneratorW");
+include("WV11MapGeneratorW8");
+include("WV11MultilayeredFractalW");
+include("WV11FeatureGeneratorW");
+include("WV11TerrainGeneratorW");
 
 ------------------------------------------------------------------------------
 function GetMapScriptInfo()

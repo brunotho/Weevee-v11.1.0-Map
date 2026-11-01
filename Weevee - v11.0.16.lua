@@ -7,10 +7,10 @@
 --	Copyright (c) 2010 Firaxis Games, Inc. All rights reserved.
 ------------------------------------------------------------------------------
 
-include("DEFMapGeneratorW8");
-include("DEFMultilayeredFractalW");
-include("DEFFeatureGeneratorW");
-include("DEFTerrainGeneratorW");
+include("WV11MapGeneratorW8");
+include("WV11MultilayeredFractalW");
+include("WV11FeatureGeneratorW");
+include("WV11TerrainGeneratorW");
 
 print("Weevee Map 11.0.16 script loaded");
 
@@ -3112,7 +3112,7 @@ function ResetWeeveeMapAttempt()
 			end
 		end
 	end
-	-- DEFMapGeneratorW8's own river bookkeeping (_rivers, keyed by plot,
+	-- WV11MapGeneratorW8's own river bookkeeping (_rivers, keyed by plot,
 	-- tracking which riverID already claimed it) is a global set up once at
 	-- script load, not reset per AddRivers() call -- unlike riverEdgeList,
 	-- which AddRivers already re-inits itself. Left alone it would carry a

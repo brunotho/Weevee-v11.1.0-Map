@@ -108,6 +108,10 @@ local FRONT_MOUNTAIN_BUDGET = 15;
 -- to diverge again later (it reads busier at the same budget, since its
 -- field traces the fold instead of straight columns).
 local FRONT_MOUNTAIN_BUDGET_DIAGONAL = 15;
+-- Standard: mountains per side as a share of the map height, all in one
+-- column (the 10.5 layout at its 25% setting). See PlaceFrontMountainField's
+-- Standard call.
+local FRONT_MOUNTAIN_STANDARD_SHARE = 0.25;
 -- No contiguous mountain blob touching the front ridges may exceed this
 -- many tiles, counting merges with mountains from the normal terrain pass.
 local FRONT_MOUNTAIN_CLUMP_CAP = 5;
@@ -550,6 +554,12 @@ end
 function IsStandardClimate()
 	local cfg = GetBarrierConfig();
 	return cfg ~= nil and cfg.kind == "snow";
+end
+------------------------------------------------------------------------------
+-- Standard only, not Standard-Diagonal (same kind, but tilted).
+function IsPlainStandardClimate()
+	local cfg = GetBarrierConfig();
+	return cfg ~= nil and cfg.kind == "snow" and cfg.tilted ~= true;
 end
 ------------------------------------------------------------------------------
 function IsOasisClimate()
@@ -6794,10 +6804,14 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 				end
 			end
 		elseif cfg.kind == "snow" and cfg.tilted ~= true then
+			-- One column instead of five, so the front doesn't read as several
+			-- layers of mountains: col2 is the column 10.5 used (iW/2 - 4). All
+			-- five are purged, so tectonics leaves no layer behind it either.
 			local col1, col2, col3, col4, col5 = GetFrontMountainColumns5West(iW);
 			PurgeFrontMountainColumns(self.wholeworldPlotTypes, iW, iH, col1, col2, col3);
+			PurgeFrontMountainColumns(self.wholeworldPlotTypes, iW, iH, col3, col4, col5);
 			if not DISABLE_FRONT_MOUNTAIN_RIDGES then
-				PlaceFrontMountainField(self.wholeworldPlotTypes, iW, iH, col1, col2, col3, col4, col5, FRONT_MOUNTAIN_BUDGET, FRONT_MOUNTAIN_CLUMP_CAP);
+				PlaceFrontMountainField(self.wholeworldPlotTypes, iW, iH, col2, col2, col2, col2, col2, math.floor(iH * FRONT_MOUNTAIN_STANDARD_SHARE), FRONT_MOUNTAIN_CLUMP_CAP);
 			end
 			if IsSnowWrapX() then
 				local x_wrap_west = GetSnowWrapLandMountainXs(iW);
@@ -11464,6 +11478,252 @@ function CullWestCoastShortRivers()
 	print("West coast short rivers dropped:", nDrop);
 end
 ------------------------------------------------------------------------------
+-- Standard: rivers that end on dry land (mostly at the barrier, where DoRiver
+-- stops and ClearRiversNearBarrier cuts) walk on to the nearest water, away
+-- from the barrier. Ported from Lekmap's LekRepairDeadEndRivers. If there's no
+-- way out, a one-tile lake ends the river, or, near the front or a start where a
+-- new lake would change the game, the river is removed. West half only: the
+-- mirror copy makes the east.
+--
+-- River flags: W = on the plot's east edge (corners NE and SE, flow N/S), NW = on
+-- its southeast edge (corners SE and S, flow NE/SW), NE = on its southwest edge
+-- (corners S and SW, flow SE/NW). A corner is identified by its three plots.
+local RIVER_REPAIR_MAX_STEPS = 30;
+local RIVER_REPAIR_LAKE_START_DIST = 3;
+function RepairDeadEndRivers()
+	if IsPlainStandardClimate() == false then
+		return
+	end
+	local iW, iH = Map.GetGridSize();
+	local D = DirectionTypes;
+	local F = FlowDirectionTypes;
+	local function nb(p, dir)
+		if p == nil then return nil; end
+		return PlotDirNoXWrap(p:GetX(), p:GetY(), dir);
+	end
+	local function idx(p) return p and (p:GetY() * iW + p:GetX()) or -1; end
+	local function corner(a, b, c)
+		local t = {idx(a), idx(b), idx(c)};
+		table.sort(t);
+		return {key = t[1] .. ":" .. t[2] .. ":" .. t[3], plots = {a, b, c}};
+	end
+	local function cNE(p) return corner(p, nb(p, D.DIRECTION_NORTHEAST), nb(p, D.DIRECTION_EAST)); end
+	local function cSE(p) return corner(p, nb(p, D.DIRECTION_EAST), nb(p, D.DIRECTION_SOUTHEAST)); end
+	local function cS(p) return corner(p, nb(p, D.DIRECTION_SOUTHEAST), nb(p, D.DIRECTION_SOUTHWEST)); end
+	local function cSW(p) return corner(p, nb(p, D.DIRECTION_SOUTHWEST), nb(p, D.DIRECTION_WEST)); end
+	local function edge(h, flag)
+		if flag == "W" then
+			return {h = h, flag = flag, a = cNE(h), fa = F.FLOWDIRECTION_NORTH, b = cSE(h), fb = F.FLOWDIRECTION_SOUTH};
+		elseif flag == "NW" then
+			return {h = h, flag = flag, a = cSE(h), fa = F.FLOWDIRECTION_NORTHEAST, b = cS(h), fb = F.FLOWDIRECTION_SOUTHWEST};
+		end
+		return {h = h, flag = flag, a = cSW(h), fa = F.FLOWDIRECTION_NORTHWEST, b = cS(h), fb = F.FLOWDIRECTION_SOUTHEAST};
+	end
+	local function hasRiver(e) return RiverEdgeStillSet(e.h, e.flag); end
+	local function flowOf(e)
+		if e.flag == "W" then return e.h:GetRiverEFlowDirection(); end
+		if e.flag == "NW" then return e.h:GetRiverSEFlowDirection(); end
+		return e.h:GetRiverSWFlowDirection();
+	end
+	local function setRiver(e, flow)
+		if e.flag == "W" then e.h:SetWOfRiver(true, flow);
+		elseif e.flag == "NW" then e.h:SetNWOfRiver(true, flow);
+		else e.h:SetNEOfRiver(true, flow); end
+	end
+	local function downstream(e)
+		local fl = flowOf(e);
+		if fl == e.fa then return e.a; end
+		if fl == e.fb then return e.b; end
+		return nil;
+	end
+	local function edgeBetween(p, q)
+		if p == nil or q == nil then return nil; end
+		local x, y = q:GetX(), q:GetY();
+		local function is(dir)
+			local r = nb(p, dir);
+			return r ~= nil and r:GetX() == x and r:GetY() == y;
+		end
+		if is(D.DIRECTION_EAST) then return edge(p, "W"); end
+		if is(D.DIRECTION_WEST) then return edge(q, "W"); end
+		if is(D.DIRECTION_SOUTHEAST) then return edge(p, "NW"); end
+		if is(D.DIRECTION_NORTHWEST) then return edge(q, "NW"); end
+		if is(D.DIRECTION_SOUTHWEST) then return edge(p, "NE"); end
+		if is(D.DIRECTION_NORTHEAST) then return edge(q, "NE"); end
+		return nil;
+	end
+	local function cornerEdges(c)
+		local p = c.plots;
+		return {edgeBetween(p[1], p[2]) or false, edgeBetween(p[2], p[3]) or false, edgeBetween(p[1], p[3]) or false};
+	end
+	local function touchesWaterOrEdge(c)
+		for i = 1, 3 do
+			local p = c.plots[i];
+			if p == nil or p:IsWater() then return true; end
+		end
+		return false;
+	end
+	local function touchesBarrier(c)
+		for i = 1, 3 do
+			local p = c.plots[i];
+			if p ~= nil and IsRiverBarrierColumn(p:GetX(), p:GetY()) then return true; end
+		end
+		return false;
+	end
+	local function sameEdge(e1, e2) return e1 and e2 and e1.flag == e2.flag and idx(e1.h) == idx(e2.h); end
+	local function flowsOn(c, e)
+		for _, o in ipairs(cornerEdges(c)) do
+			if o and not sameEdge(o, e) and hasRiver(o) then
+				local d = downstream(o);
+				if d ~= nil and d.key ~= c.key then return true; end
+			end
+		end
+		return false;
+	end
+	-- Distance of every plot to the nearest water.
+	local dist = BuildRiverWaterDistanceField();
+	local function cornerCost(c)
+		local best = 9999;
+		local front = 0;
+		for i = 1, 3 do
+			local p = c.plots[i];
+			if p ~= nil then
+				local dd = dist[p:GetY() * iW + p:GetX() + 1] or 9999;
+				if dd < best then best = dd; end
+				local fc = RiverFrontCloseness(p:GetX(), p:GetY());
+				if fc > front then front = fc; end
+			end
+		end
+		return best * 10 + front * 15;
+	end
+	local function removeRiver(e0)
+		local stack = {e0};
+		local n = 0;
+		while #stack > 0 do
+			local e = table.remove(stack);
+			if hasRiver(e) then
+				ClearRiverEdge(e.h, e.flag);
+				n = n + 1;
+				local cs = {e.a, e.b};
+				for ci = 1, 2 do
+					for _, o in ipairs(cornerEdges(cs[ci])) do
+						if o and hasRiver(o) then table.insert(stack, o); end
+					end
+				end
+			end
+		end
+		return n;
+	end
+	local function lakeAllowed(p)
+		if p == nil or p:IsWater() or p:IsMountain() or p:GetResourceType(-1) ~= -1 or PlotHasNaturalWonder(p) then
+			return false;
+		end
+		if RiverFrontCloseness(p:GetX(), p:GetY()) > 0 or IsRiverBarrierColumn(p:GetX(), p:GetY()) then
+			return false;
+		end
+		for dir = 0, 5 do
+			local np = nb(p, dir);
+			if np ~= nil and PlotHasNaturalWonder(np) then return false; end
+		end
+		for pid = 0, GameDefines.MAX_CIV_PLAYERS - 1 do
+			local pl = Players[pid];
+			local sp = pl and pl:GetStartingPlot();
+			if sp ~= nil and Map.PlotDistance(p:GetX(), p:GetY(), sp:GetX(), sp:GetY()) < RIVER_REPAIR_LAKE_START_DIST then
+				return false;
+			end
+		end
+		return true;
+	end
+	-- Collect the dead ends first, then repair them.
+	local dead = {};
+	local mid = math.floor(iW / 2);
+	for y = 0, iH - 1 do
+		for x = 0, mid - 1 do
+			local p = Map.GetPlot(x, y);
+			for _, flag in ipairs({"W", "NW", "NE"}) do
+				if RiverEdgeStillSet(p, flag) then
+					local e = edge(p, flag);
+					local c = downstream(e);
+					if c ~= nil and not touchesWaterOrEdge(c) and not flowsOn(c, e) then
+						table.insert(dead, {e = e, c = c});
+					end
+				end
+			end
+		end
+	end
+	local nExtended, nSteps, nLakes, nRemoved = 0, 0, 0, 0;
+	for _, d in ipairs(dead) do
+		local e, c = d.e, d.c;
+		if hasRiver(e) and not touchesWaterOrEdge(c) and not flowsOn(c, e) then -- an earlier repair may have fixed it
+			local visited = {[c.key] = true};
+			local added = {};
+			local ok = false;
+			for step = 1, RIVER_REPAIR_MAX_STEPS do
+				local best, bestCost, bestFlow, bestNext = nil, math.huge, nil, nil;
+				for _, o in ipairs(cornerEdges(c)) do
+					if o and not sameEdge(o, e) then
+						local nextC, fl;
+						if o.a.key == c.key then
+							nextC, fl = o.b, o.fb;
+						else
+							nextC, fl = o.a, o.fa;
+						end
+						if not visited[nextC.key] and not touchesBarrier(nextC) then
+							if hasRiver(o) then
+								local dn = downstream(o);
+								if dn ~= nil and dn.key == nextC.key then
+									best, bestCost, bestNext = o, -1, nextC; -- joins a river that flows on
+								end
+							elseif bestCost ~= -1 then
+								local cost = cornerCost(nextC) + Map.Rand(10, "River repair");
+								if cost < bestCost then
+									best, bestCost, bestFlow, bestNext = o, cost, fl, nextC;
+								end
+							end
+						end
+					end
+				end
+				if best == nil then break; end
+				if bestCost == -1 then ok = true; break; end
+				setRiver(best, bestFlow);
+				table.insert(added, best);
+				visited[bestNext.key] = true;
+				e, c = best, bestNext;
+				if touchesWaterOrEdge(c) or flowsOn(c, e) then ok = true; break; end
+			end
+			if ok then
+				nExtended = nExtended + 1;
+				nSteps = nSteps + #added;
+			else
+				for _, a in ipairs(added) do
+					ClearRiverEdge(a.h, a.flag);
+				end
+				-- The lake goes on the corner's plot the river doesn't run along.
+				local made = false;
+				for i = 1, 3 do
+					local p = d.c.plots[i];
+					local ee = edgeBetween(d.c.plots[(i % 3) + 1], d.c.plots[((i + 1) % 3) + 1]);
+					if not made and ee and sameEdge(ee, d.e) and lakeAllowed(p) then
+						p:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+						p:SetPlotType(PlotTypes.PLOT_OCEAN, false, false);
+						p:SetTerrainType(TerrainTypes.TERRAIN_COAST, false, false);
+						made = true;
+					end
+				end
+				if made then
+					nLakes = nLakes + 1;
+				else
+					removeRiver(d.e);
+					nRemoved = nRemoved + 1;
+				end
+			end
+		end
+	end
+	if nLakes > 0 then
+		Map.RecalculateAreas();
+	end
+	print("Dead-end rivers:", #dead, "extended", nExtended, "steps", nSteps, "lakes", nLakes, "removed", nRemoved);
+end
+------------------------------------------------------------------------------
 function AddRivers()
 
 	-- Customization for Skirmish, to keep river starts away from buffer zone in middle columns of map, and set river "original flow direction".
@@ -12333,6 +12593,9 @@ function PaintStandardSnowRelief()
 		return false
 	end
 	local nPeak = 2 + Map.Rand(2, "Snow Peak Count");
+	if IsPlainStandardClimate() then
+		nPeak = 0; -- a peak behind the front line is another mountain layer
+	end
 	local gap = math.floor(#land / (nPeak + 1));
 	if gap < 2 then
 		gap = 2;
@@ -12529,17 +12792,21 @@ function CapBarrierMountains()
 		y = y + 1;
 	end
 	local n = #mtns;
-	if n <= 4 then
+	local maxMtns = 4;
+	if IsPlainStandardClimate() then
+		maxMtns = 0;
+	end
+	if n <= maxMtns then
 		print("Barrier mountains:", n);
 		return
 	end
 	mtns = GetShuffledCopyOfTable(mtns);
-	local k = 5;
+	local k = maxMtns + 1;
 	while k <= n do
 		mtns[k]:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
 		k = k + 1;
 	end
-	print("Barrier mountains capped:", n, "-> 4");
+	print("Barrier mountains capped:", n, "->", maxMtns);
 end
 ------------------------------------------------------------------------------
 function CountSnowForestNeighbors(plot)
@@ -12553,6 +12820,22 @@ function CountSnowForestNeighbors(plot)
 		d = d + 1;
 	end
 	return n;
+end
+------------------------------------------------------------------------------
+-- Standard: Snow is bare (flat, hills or mountain). Run last, because several
+-- passes can put a forest there (the stock feature pass, AddForestToResource).
+function StripStandardSnowForests()
+	if IsPlainStandardClimate() == false then
+		return
+	end
+	local n = 0;
+	for i, plot in Plots() do
+		if plot:GetTerrainType() == TerrainTypes.TERRAIN_SNOW and plot:GetFeatureType() == FeatureTypes.FEATURE_FOREST then
+			plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+			n = n + 1;
+		end
+	end
+	print("Standard snow forests removed:", n);
 end
 ------------------------------------------------------------------------------
 function ForestTundraSeparatorResources()
@@ -20571,6 +20854,7 @@ function StartPlotSystem()
 	end
 	WeeveeDbgCall("CullShortRivers", CullShortRivers);
 	WeeveeDbgCall("CullWestCoastShortRivers", CullWestCoastShortRivers);
+	WeeveeDbgCall("RepairDeadEndRivers", RepairDeadEndRivers);
 	WeeveeDbgCall("PurgeNearStartLakeFish", PurgeNearStartLakeFish);
 	WeeveeDbgCall("FixNorthUniqueLuxuries", FixNorthUniqueLuxuries);
 	WeeveeDbgCall("StripOasisWestSparseLux", StripOasisWestSparseLux);
@@ -20631,6 +20915,7 @@ function StartPlotSystem()
 	-- (start fixes, regional/quota luxury forcing, trims) runs after the
 	-- first sweep and can still edit plots.
 	WeeveeDbgCall("StripIllegalWaterResources-final", StripIllegalWaterResources);
+	WeeveeDbgCall("StripStandardSnowForests", StripStandardSnowForests);
 	WeeveeDbgCall("LogRegionalLuxuryCounts-preMirror", function() LogRegionalLuxuryCounts(start_plot_database, "pre-mirror-final") end);
 	WeeveeDbg("before mirror");
 	if DEF_MIRRORED == 1 then

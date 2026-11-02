@@ -394,6 +394,9 @@ function GetBarrierConfig()
 			snowGroupsMin = 2,
 			frontOpenings = {width = 4, min = 2}, -- ways into each side through the snow after the mirror, counted per 4 tiles of width
 			backBayIslandChance = 25, -- percent of maps with a big island in a bay of the back coast
+			-- 0-2 small lakes per side: the 46x20 map holds fewer water tiles than
+			-- Standard's 40x26 at the same share, so fewer spots for fish.
+			lakes = {max = 2, size = {2, 4}},
 			shapeClearRadius = {4, 5}, -- mountains at the front give way around snow shapes
 			groupSizeOdds = {50, 85}, -- percent: 1 tile below the first, 2 below the second, else 3
 			tilted = true,
@@ -7673,6 +7676,9 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 			end
 			if cfg.kind == "snow" then
 				nBodies = 0;
+				if cfg.lakes ~= nil then
+					nBodies = Map.Rand(cfg.lakes.max + 1, "Small lake count");
+				end
 			end
 			if cfg.kind == "bramble" then
 				-- Bramble's water is entirely PlaceDiagonalBackWater's, not
@@ -7684,7 +7690,9 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 			end
 			for n = 1, nBodies do
 				local lakeSize = 3 + Map.Rand(8, "Snow Wrap Lake Size");
-				if cfg.kind == "wetland" then
+				if cfg.lakes ~= nil then
+					lakeSize = cfg.lakes.size[1] + Map.Rand(cfg.lakes.size[2] - cfg.lakes.size[1] + 1, "Small lake size");
+				elseif cfg.kind == "wetland" then
 					-- Murky's water is Standard's twin (same 2-col back strip,
 					-- same 1-2 bodies of 3-10); matches the 5-14 bump in
 					-- PlaceStandardEdgeSeas (~+12% salt water).

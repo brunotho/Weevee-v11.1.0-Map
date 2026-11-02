@@ -39,6 +39,7 @@ Civ 5 teamer map.
 - Each side has at least two ways in through the snow, each at least 4 tiles wide
 - Coast and seas now work like Standard's: a thin back coast and bays at the map edges instead of seas in the middle of the land
 - A big island in a back-coast bay now and then, instead of on every map
+- Up to two small lakes per side
 - Fixed maps with too few sea resources
 
 **Oasis**

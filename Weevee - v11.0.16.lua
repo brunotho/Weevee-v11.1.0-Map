@@ -3178,9 +3178,7 @@ local climateScaleResolved = false;
 local climateScale = 0.8;
 local climateVariation = nil;
 local luxTargetResolved = false;
-local luxWantU = 15;
-local luxWantD = 7;
-local luxWantT = 3;
+local luxWant = {};
 -- Must be declared before ResetWeeveeGenState (right below) so its own
 -- reset assignment closes over this same local, not an unrelated global --
 -- ResolvePeaksJungleBand/IsPeaksJungleLatitude (defined much later, near
@@ -8563,7 +8561,7 @@ function EnsureOasisUniqueLuxuries()
 	if IsOasisClimate() == false then
 		return
 	end
-	local minWant, _, _ = ResolveLuxTargets();
+	local minWant = ResolveLuxTargets()[1];
 	local iW, iH = Map.GetGridSize();
 	local hinter = OasisWestDesertColumns();
 	local maxX = iW - 1;
@@ -8820,21 +8818,83 @@ function EnsureOasisUniqueLuxuries()
 	print("Oasis unique lux:", nUnique, "min", minWant, "added", nPlaced, "mining extra", extra);
 end
 ------------------------------------------------------------------------------
-local LUX_MIN_UNIQUE = 15;
-local LUX_MAX_UNIQUE = 24;
-local LUX_MIN_DUP = 7;
-local LUX_MAX_DUP = 13;
-local LUX_MIN_TRIP = 3;
+-- Luxury tiers on the west half: want[k] is how many luxury types have at
+-- least k copies there, one tier per civ on a side. The first tier is unique
+-- types, the last is 3 types, and each civ in between adds a middle tier:
+-- 3v3 is 15-24 / 7-13 / 3, 4v4 is 15-24 / 7-13 / 7-13 / 3 (a type with
+-- 3+ copies also has 2+, so the higher middle tier gets the smaller roll).
+-- One civ per side (1v1 on Duel) has its own smaller targets: 10.5 had no
+-- numbers for it, so these are what Duel maps actually reached, and stock
+-- disables 11 luxury types on Duel.
+local LUX_UNIQUE_RANGE = {15, 24};
+local LUX_MIDDLE_RANGE = {7, 13};
+local LUX_TOP_TIER = 3;
+local LUX_DUEL_TIERS = {{8, 11}, {3, 4}, {1, 1}};
+local LUX_TIER_NAMES = {"unique", "dup", "trip", "quad"};
+function LuxCivsPerSide()
+	if iNumCivsInWest ~= nil and iNumCivsInWest > 0 then
+		return iNumCivsInWest
+	end
+	local n = 0;
+	local i = 0;
+	while i < GameDefines.MAX_MAJOR_CIVS do
+		local p = Players[i];
+		if p ~= nil and p:IsEverAlive() then
+			n = n + 1;
+		end
+		i = i + 1;
+	end
+	return math.max(1, math.ceil(n / 2));
+end
+function LuxTierText(have, want, sep)
+	sep = sep or " ";
+	local parts = {};
+	local k = 1;
+	while k <= #want do
+		local name = LUX_TIER_NAMES[k] or ("x" .. k);
+		if have ~= nil then
+			table.insert(parts, name .. sep .. tostring(have[k] or 0) .. "/" .. want[k]);
+		else
+			table.insert(parts, name .. sep .. want[k]);
+		end
+		k = k + 1;
+	end
+	return table.concat(parts, " ");
+end
 function ResolveLuxTargets()
 	if luxTargetResolved then
-		return luxWantU, luxWantD, luxWantT;
+		return luxWant;
 	end
 	luxTargetResolved = true;
-	luxWantU = LUX_MIN_UNIQUE + Map.Rand(LUX_MAX_UNIQUE - LUX_MIN_UNIQUE + 1, "Lux unique target");
-	luxWantD = LUX_MIN_DUP + Map.Rand(LUX_MAX_DUP - LUX_MIN_DUP + 1, "Lux dup target");
-	luxWantT = LUX_MIN_TRIP;
-	print("Lux targets unique", luxWantU, "dup", luxWantD, "trip", luxWantT);
-	return luxWantU, luxWantD, luxWantT;
+	luxWant = {};
+	local nSide = LuxCivsPerSide();
+	if nSide <= 1 then
+		local k = 1;
+		while k <= #LUX_DUEL_TIERS do
+			local r = LUX_DUEL_TIERS[k];
+			luxWant[k] = r[1] + Map.Rand(r[2] - r[1] + 1, "Lux tier target");
+			k = k + 1;
+		end
+	else
+		local r = LUX_UNIQUE_RANGE;
+		luxWant[1] = r[1] + Map.Rand(r[2] - r[1] + 1, "Lux unique target");
+		local middle = {};
+		r = LUX_MIDDLE_RANGE;
+		local k = 2;
+		while k < nSide do
+			table.insert(middle, r[1] + Map.Rand(r[2] - r[1] + 1, "Lux middle target"));
+			k = k + 1;
+		end
+		table.sort(middle, function(a, b) return a > b end);
+		local i = 1;
+		while i <= #middle do
+			luxWant[i + 1] = middle[i];
+			i = i + 1;
+		end
+		luxWant[nSide] = LUX_TOP_TIER;
+	end
+	print("Lux targets " .. LuxTierText(nil, luxWant));
+	return luxWant;
 end
 function IsWeeveeLuxuryID(res)
 	if res == nil or res == -1 then
@@ -9000,13 +9060,13 @@ function LuxuryPlayableMaxX(iW)
 	return iW - 1;
 end
 ------------------------------------------------------------------------------
+-- counts[type] = copies on the west half; have[k] = types with at least k
+-- copies, for each tier in ResolveLuxTargets.
 function GatherLuxuryTiers()
 	local iW, iH = Map.GetGridSize();
 	local maxX = LuxuryPlayableMaxX(iW);
+	local nTiers = #ResolveLuxTargets();
 	local counts = {};
-	local nUnique = 0;
-	local nDup = 0;
-	local nTrip = 0;
 	local y = 0;
 	while y < iH do
 		local x = 0;
@@ -9015,33 +9075,42 @@ function GatherLuxuryTiers()
 			if plot ~= nil then
 				local res = plot:GetResourceType(-1);
 				if IsWeeveeLuxuryID(res) then
-					if counts[res] == nil then
-						counts[res] = 0;
-						nUnique = nUnique + 1;
-					end
-					counts[res] = counts[res] + 1;
+					counts[res] = (counts[res] or 0) + 1;
 				end
 			end
 			x = x + 1;
 		end
 		y = y + 1;
 	end
+	local have = {};
+	local k = 1;
+	while k <= nTiers do
+		have[k] = 0;
+		k = k + 1;
+	end
 	local id, n;
 	for id, n in pairs(counts) do
-		if n >= 2 then
-			nDup = nDup + 1;
-		end
-		if n >= 3 then
-			nTrip = nTrip + 1;
+		k = 1;
+		while k <= nTiers and k <= n do
+			have[k] = have[k] + 1;
+			k = k + 1;
 		end
 	end
-	return counts, nUnique, nDup, nTrip;
+	return counts, have;
 end
 ------------------------------------------------------------------------------
 function LuxuryQuotaMet()
-	local counts, nUnique, nDup, nTrip = GatherLuxuryTiers();
-	local wantU, wantD, wantT = ResolveLuxTargets();
-	return (nUnique >= wantU and nDup >= wantD and nTrip >= wantT), nUnique, nDup, nTrip;
+	local counts, have = GatherLuxuryTiers();
+	local want = ResolveLuxTargets();
+	local ok = true;
+	local k = 1;
+	while k <= #want do
+		if have[k] < want[k] then
+			ok = false;
+		end
+		k = k + 1;
+	end
+	return ok, have;
 end
 ------------------------------------------------------------------------------
 function EnsureLuxuryQuota()
@@ -9262,8 +9331,10 @@ function EnsureLuxuryQuota()
 			i = i + 1;
 		end
 	end
-	local counts, nUnique, nDup, nTrip = GatherLuxuryTiers();
-	local wantU, wantD, wantT = ResolveLuxTargets();
+	local counts, have = GatherLuxuryTiers();
+	local want = ResolveLuxTargets();
+	local nUnique = have[1];
+	local wantU = want[1];
 	if IsOasisClimate() and nUnique < wantU then
 		local unused = {};
 		for res in GameInfo.Resources() do
@@ -9282,12 +9353,8 @@ function EnsureLuxuryQuota()
 			ui = ui + 1;
 		end
 	elseif nUnique < wantU then
-		-- Every non-Oasis climate, plain Standard included, reaches for the
-		-- same randomized ideal target (LUX_MIN_UNIQUE..LUX_MAX_UNIQUE)
-		-- instead of Standard settling for the bare floor -- Standard no
-		-- longer gets a floor-only carve-out (see LuxuryQuotaMet's matching
-		-- removal of its own Standard exemption, so a Standard roll that
-		-- falls short now rerolls the whole map like every other climate).
+		-- Every other climate pads toward the same rolled unique target; a
+		-- roll that still falls short rerolls the map (LuxuryQuotaMet).
 		local unused = {};
 		for res in GameInfo.Resources() do
 			if IsWeeveeLuxuryID(res.ID) and counts[res.ID] == nil and banned[res.ID] ~= true then
@@ -9305,45 +9372,51 @@ function EnsureLuxuryQuota()
 			ui = ui + 1;
 		end
 	end
-	padTo(2, 1, wantD);
-	padTo(3, 2, wantT);
+	local tier = 2;
+	while tier <= #want do
+		padTo(tier, tier - 1, want[tier]);
+		tier = tier + 1;
+	end
 	if IsStandardClimate() and IsTiltedMirrorAxis() then
-		-- Standard-Diagonal treats a triplicate shortfall as serious: force one
-		-- through with relaxed spacing/terraforming before falling back to a
-		-- full map reroll (GenerateMap retries on LuxuryQuotaMet() == false).
-		local counts2 = GatherLuxuryTiers();
-		local dupIds = {};
-		local id2, n2;
-		for id2, n2 in pairs(counts2) do
-			if n2 == 2 and banned[id2] ~= true then
-				table.insert(dupIds, id2);
+		-- Standard-Diagonal treats a shortfall in the tiers from 3 copies up as
+		-- serious: force one through with relaxed spacing/terraforming before
+		-- falling back to a full map reroll (GenerateMap retries on
+		-- LuxuryQuotaMet() == false).
+		tier = 3;
+		while tier <= #want do
+			local counts2 = GatherLuxuryTiers();
+			local belowIds = {};
+			local haveTier = 0;
+			local id2, n2;
+			for id2, n2 in pairs(counts2) do
+				if n2 == tier - 1 and banned[id2] ~= true then
+					table.insert(belowIds, id2);
+				end
+				if n2 >= tier then
+					haveTier = haveTier + 1;
+				end
 			end
-		end
-		if #dupIds > 1 then
-			dupIds = GetShuffledCopyOfTable(dupIds);
-		end
-		local haveT = 0;
-		for id2, n2 in pairs(counts2) do
-			if n2 >= 3 then
-				haveT = haveT + 1;
+			if #belowIds > 1 then
+				belowIds = GetShuffledCopyOfTable(belowIds);
 			end
-		end
-		local fi = 1;
-		while haveT < wantT and fi <= #dupIds do
-			if tryPlaceForceTriplicate(dupIds[fi]) then
-				haveT = haveT + 1;
+			local fi = 1;
+			while haveTier < want[tier] and fi <= #belowIds do
+				if tryPlaceForceTriplicate(belowIds[fi]) then
+					haveTier = haveTier + 1;
+				end
+				fi = fi + 1;
 			end
-			fi = fi + 1;
+			tier = tier + 1;
 		end
 	end
-	local ok, u, d, t = LuxuryQuotaMet();
-	print("Luxury quota pad:", u, "/", wantU, "unique", d, "/", wantD, "dup", t, "/", wantT, "trip", "ok", tostring(ok));
+	local ok, haveNow = LuxuryQuotaMet();
+	print("Luxury quota pad: " .. LuxTierText(haveNow, want) .. " ok " .. tostring(ok));
 	-- print() isn't captured anywhere persistent in this setup (Lua.log stays
 	-- essentially empty) -- this is called twice per generation (once in the
 	-- normal pipeline, again as "EnsureLuxuryQuota-postRegionalForce" at the
 	-- very end), so the first logged line per roll is the pre-regional-force
 	-- snapshot and the second is the true final state.
-	WeeveeDbgPersist("EnsureLuxuryQuota unique=" .. u .. "/" .. wantU .. " dup=" .. d .. "/" .. wantD .. " trip=" .. t .. "/" .. wantT .. " ok=" .. tostring(ok));
+	WeeveeDbgPersist("EnsureLuxuryQuota " .. LuxTierText(haveNow, want, "=") .. " ok=" .. tostring(ok));
 	return ok
 end
 ------------------------------------------------------------------------------
@@ -9369,8 +9442,8 @@ function TrimLuxuryQuotaExcess(asp)
 	if asp == nil or asp.region_luxury_assignment == nil then
 		return
 	end
-	local wantU, wantD, wantT = ResolveLuxTargets();
-	local counts, nUnique, nDup, nTrip = GatherLuxuryTiers();
+	local want = ResolveLuxTargets();
+	local counts, have = GatherLuxuryTiers();
 	local protected = {};
 	local rn = 1;
 	while rn <= asp.iNumCivs do
@@ -9402,67 +9475,40 @@ function TrimLuxuryQuotaExcess(asp)
 		return false
 	end
 	local nTrimmed = 0;
-	-- nTrip (from GatherLuxuryTiers) counts every type with >=3 copies, not
-	-- just ones sitting at exactly 3 -- picking only an exact-3 match here
-	-- meant a non-regional type that already had 4+ copies (vanilla
-	-- placement, city-state seeding, or EnsureLuxuryQuota padding landing on
-	-- it) could never be selected at all, so it sat there inflating nTrip
-	-- forever with nothing ever trimming it back out of the tier. Instead,
-	-- pick whichever unprotected type still in the tier has the LOWEST
-	-- count -- for a type already at exactly 3 this behaves identically to
-	-- before (one removal drops it out immediately); for a leftover 4/5/6+
-	-- copy type it gets walked down one copy per loop iteration until it
-	-- finally drops below 3 and actually exits the tier.
-	while nTrip > wantT do
-		local target, targetN = nil, nil;
-		local resID, n;
-		for resID, n in pairs(counts) do
-			if n >= 3 and protected[resID] ~= true and (targetN == nil or n < targetN) then
-				target, targetN = resID, n;
+	-- Top tier first, down to unique. The top tier counts every type with at
+	-- least that many copies, so it takes the unprotected type with the
+	-- lowest count and walks it down one copy at a time until it leaves the
+	-- tier; a type far above it (4+ copies from stock placement or padding)
+	-- would otherwise never leave. Lower tiers only take types sitting
+	-- exactly at the tier, so trimming them never pulls a higher tier below
+	-- its target.
+	local top = #want;
+	local tier = top;
+	while tier >= 1 do
+		while have[tier] > want[tier] do
+			local target, targetN = nil, nil;
+			local resID, n;
+			for resID, n in pairs(counts) do
+				local fits = (n == tier) or (tier == top and n > tier);
+				if fits and protected[resID] ~= true and (targetN == nil or n < targetN) then
+					target, targetN = resID, n;
+				end
 			end
-		end
-		if target == nil or removeOneCopy(target) == false then
-			break
-		end
-		counts[target] = counts[target] - 1;
-		if counts[target] < 3 then
-			nTrip = nTrip - 1;
-		end
-		nTrimmed = nTrimmed + 1;
-	end
-	while nDup > wantD do
-		local target = nil;
-		local resID, n;
-		for resID, n in pairs(counts) do
-			if n == 2 and protected[resID] ~= true then
-				target = resID;
+			if target == nil or removeOneCopy(target) == false then
 				break
 			end
-		end
-		if target == nil or removeOneCopy(target) == false then
-			break
-		end
-		counts[target] = counts[target] - 1;
-		nDup = nDup - 1;
-		nTrimmed = nTrimmed + 1;
-	end
-	while nUnique > wantU do
-		local target = nil;
-		local resID, n;
-		for resID, n in pairs(counts) do
-			if n == 1 and protected[resID] ~= true then
-				target = resID;
-				break
+			if targetN <= top then
+				have[targetN] = have[targetN] - 1;
 			end
+			counts[target] = targetN - 1;
+			if counts[target] == 0 then
+				counts[target] = nil;
+			end
+			nTrimmed = nTrimmed + 1;
 		end
-		if target == nil or removeOneCopy(target) == false then
-			break
-		end
-		counts[target] = nil;
-		nUnique = nUnique - 1;
-		nTrimmed = nTrimmed + 1;
+		tier = tier - 1;
 	end
-	WeeveeDbgPersist("TrimLuxuryQuotaExcess trimmed=" .. nTrimmed .. " final unique=" .. nUnique .. "/" .. wantU .. " dup=" .. nDup .. "/" .. wantD .. " trip=" .. nTrip .. "/" .. wantT);
+	WeeveeDbgPersist("TrimLuxuryQuotaExcess trimmed=" .. nTrimmed .. " final " .. LuxTierText(have, want, "="));
 end
 ------------------------------------------------------------------------------
 -- At most CAPITAL_LUX_MAX luxuries in a capital (the start tile and radius 3),
@@ -22039,8 +22085,8 @@ function GenerateMap()
 		weeveeFrontGapFail = false;
 		weeveeLastAttempt = (attempt == maxAttempts);
 		CoreGenerateMap();
-		local ok, nUnique, nDup, nTrip = LuxuryQuotaMet();
-		local wantU, wantD, wantT = ResolveLuxTargets();
+		local ok, have = LuxuryQuotaMet();
+		local want = ResolveLuxTargets();
 		if weeveeStartDistFail then
 			print("Start min-dist 7 rejected");
 		end
@@ -22051,10 +22097,10 @@ function GenerateMap()
 			print("Front gap rejected");
 		end
 		if ok and weeveeStartDistFail ~= true and weeveeStartDesertFail ~= true and weeveeFrontGapFail ~= true then
-			print("Luxury quota accepted unique", nUnique, "/", wantU, "dup", nDup, "/", wantD, "trip", nTrip, "/", wantT);
+			print("Luxury quota accepted " .. LuxTierText(have, want));
 			return
 		end
-		print("Luxury quota rejected unique", nUnique, "/", wantU, "dup", nDup, "/", wantD, "trip", nTrip, "/", wantT);
+		print("Luxury quota rejected " .. LuxTierText(have, want));
 		if attempt >= maxAttempts then
 			print("Map retry exhausted, keeping last map");
 			return

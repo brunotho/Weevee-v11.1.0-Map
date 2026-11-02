@@ -397,6 +397,10 @@ function GetBarrierConfig()
 			-- 0-2 small lakes per side: the 46x20 map holds fewer water tiles than
 			-- Standard's 40x26 at the same share, so fewer spots for fish.
 			lakes = {max = 2, size = {2, 4}},
+			-- Percent of the back coast's rows cut (two-bay maps, one-bay maps).
+			-- Standard's 50/25 on 26 rows; on 20 rows these keep about the same
+			-- number of coast rows, so the salt water per side matches Standard's.
+			backCoastCut = {35, 10},
 			shapeClearRadius = {4, 5}, -- mountains at the front give way around snow shapes
 			groupSizeOdds = {50, 85}, -- percent: 1 tile below the first, 2 below the second, else 3
 			tilted = true,
@@ -544,11 +548,17 @@ function ResolveSaltWaterPlan()
 			saltCutPct = 38 + Map.Rand(5, "Frosty BackCoast Cut");
 			saltNSeas = 0;
 		else
+			-- Half the back coast's rows cut and two edge bays, or a quarter
+			-- and one. cfg.backCoastCut replaces the two cuts (percent).
+			local cut = {50, 25};
+			if cfg ~= nil and cfg.backCoastCut ~= nil then
+				cut = cfg.backCoastCut;
+			end
 			if Map.Rand(2, "Explo back coast plan") == 0 then
-				saltCutPct = 50;
+				saltCutPct = cut[1];
 				saltNSeas = 2;
 			else
-				saltCutPct = 25;
+				saltCutPct = cut[2];
 				saltNSeas = 1;
 			end
 		end

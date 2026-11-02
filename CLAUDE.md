@@ -6,7 +6,9 @@ Read this before changing the map. Keep it short and correct it when it turns ou
 The map grew by adding rule on top of rule, with later passes correcting earlier ones, and each climate adds more. A full rewrite is not planned. It gets cleaner slowly: every change follows the principles below and leaves the code it touches a little better.
 
 ## Start here (state on 2026-11-02)
-Commits `0b584bc` to `183e3cb` are local on `main`, **not pushed**, and everything after them is **uncommitted**: all the map changes below, this file, `VERSION-BUMP.txt` and the new `README.md`. The version is still 11.0.16. The user edits the changelog in `README.md`, then asks for the commits, bump and push. Split the work into focused commits as far as the shared file allows.
+Commits `0b584bc` to `dd8da31` are local on `main`, **not pushed**. `dd8da31` is a safepoint holding all the map changes below in one commit. After it, **uncommitted**: canvas sizes scaled per map size (below). The version is still 11.0.16. The user edits the changelog in `README.md`, then asks for the commits, bump and push.
+
+**Other player counts (started 2026-11-02):** 3v3 on Small is the tuned case; 1v1 is played on Duel, 4v4 on Standard. Only 6-civ games have ever been logged. Canvas: 10.5's size table (`BaseGridSize`), with 11's Small-tuned changes scaled by size relative to 44x26 (`ScaleCanvasCols/Rows`): explo trim, Oasis band (`OasisWestDesertColumns`), Diagonal height (multiple of 4) and width. Small unchanged; Frosty (WIP) not scaled. Still fixed in absolute numbers: start-region margins (6 rows top/bottom, so Duel gets a 1x2 region and Duel-Diagonal at 12 rows gets none), min start distance 7, start edge margin 4, luxury totals (15-24 unique, 7-13 dup), sea resources 9-15 per side, mountain budgets.
 
 **Where it runs:** the working folder is now `Assets\Maps\Weevee-v11.08-Map-main`, and the game plays these files directly (`Evaluating Map Path` in `net_message_debug.log`). No copy to keep in sync. The Weevee mod is `Assets\DLC\snowve`, with its DLL source in `CvGameCoreDLL_Expansion2`.
 

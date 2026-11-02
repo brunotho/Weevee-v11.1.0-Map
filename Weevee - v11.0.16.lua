@@ -658,8 +658,49 @@ function OasisLuxuryWithin(x, y, maxD)
 	return false
 end
 ------------------------------------------------------------------------------
-function OasisWestDesertColumns()
-	return 8;
+-- 10.5's canvas per world size. 11's canvas changes were tuned on Small
+-- (44x26); every other size gets them scaled by its size relative to Small,
+-- so Small stays exactly as tuned.
+local CANVAS_TUNED_W = 44;
+local CANVAS_TUNED_H = 26;
+function BaseGridSize(worldSize)
+	if worldSize == nil and Map ~= nil and Map.GetWorldSize ~= nil then
+		worldSize = Map.GetWorldSize();
+	end
+	local worldsizes = {
+		[GameInfo.Worlds.WORLDSIZE_DUEL.ID] = {34, 14},
+		[GameInfo.Worlds.WORLDSIZE_TINY.ID] = {40, 22},
+		[GameInfo.Worlds.WORLDSIZE_SMALL.ID] = {44, 26},
+		[GameInfo.Worlds.WORLDSIZE_STANDARD.ID] = {50, 30},
+		[GameInfo.Worlds.WORLDSIZE_LARGE.ID] = {52, 32},
+		[GameInfo.Worlds.WORLDSIZE_HUGE.ID] = {64, 40}
+		}
+	local g = nil;
+	if worldSize ~= nil then
+		g = worldsizes[worldSize];
+	end
+	return g;
+end
+-- A column count tuned on Small, scaled to this world size's width.
+function ScaleCanvasCols(n, worldSize)
+	local g = BaseGridSize(worldSize);
+	if g == nil then
+		return n
+	end
+	return math.floor(n * g[1] / CANVAS_TUNED_W + 0.5);
+end
+-- A row count tuned on Small, scaled to this world size's height.
+function ScaleCanvasRows(n, worldSize)
+	local g = BaseGridSize(worldSize);
+	if g == nil then
+		return n
+	end
+	return math.floor(n * g[2] / CANVAS_TUNED_H + 0.5);
+end
+------------------------------------------------------------------------------
+-- 8 on Small; the canvas widens by this much per side (GetMapInitData).
+function OasisWestDesertColumns(worldSize)
+	return ScaleCanvasCols(8, worldSize);
 end
 ------------------------------------------------------------------------------
 function OasisIsWestHinterlandX(x, iW)
@@ -3046,15 +3087,9 @@ function GetMapInitData(worldSize)
 	-- This function can reset map grid sizes or world wrap settings.
 	--
 	-- East vs West is an extremely compact multiplayer map type.
-	local worldsizes = {
-		[GameInfo.Worlds.WORLDSIZE_DUEL.ID] = {34, 14},
-		[GameInfo.Worlds.WORLDSIZE_TINY.ID] = {40, 22},
-		[GameInfo.Worlds.WORLDSIZE_SMALL.ID] = {44, 26},
-		[GameInfo.Worlds.WORLDSIZE_STANDARD.ID] = {50, 30},
-		[GameInfo.Worlds.WORLDSIZE_LARGE.ID] = {52, 32},
-		[GameInfo.Worlds.WORLDSIZE_HUGE.ID] = {64, 40}
-		}
-	local grid_size = worldsizes[worldSize];
+	-- The base sizes are 10.5's (BaseGridSize); the changes below are tuned
+	-- on Small and scaled to other sizes (ScaleCanvasCols/Rows).
+	local grid_size = BaseGridSize(worldSize);
 	--
 	local world = GameInfo.Worlds[worldSize];
 	if(world ~= nil) then
@@ -3065,10 +3100,11 @@ function GetMapInitData(worldSize)
 		local w = grid_size[1];
 		local h = grid_size[2];
 		if IsExploBalance() then
-			w = w - 4;
+			-- 2 columns per side on Small.
+			w = w - 2 * ScaleCanvasCols(2, worldSize);
 		end
 		if cfg ~= nil and cfg.kind == "desert" then
-			local extra = OasisWestDesertColumns();
+			local extra = OasisWestDesertColumns(worldSize);
 			if DEF_MIRRORED == 1 then
 				w = w + extra * 2;
 			else
@@ -3090,9 +3126,10 @@ function GetMapInitData(worldSize)
 			-- The tilted barrier's row-mirroring math needs a map height that's
 			-- a multiple of 4 to be simultaneously exact-width and visually
 			-- straight (see the Standard-Diagonal width/smoothness investigation).
-			-- Small/Tiny's default height (22) isn't, so pin it to one that is.
-			h = 20;
-			w = w + 6;
+			-- Small's 20 rows and 3 extra columns per side, scaled, with the
+			-- height rounded to a multiple of 4.
+			h = 4 * math.floor(ScaleCanvasRows(20, worldSize) / 4 + 0.5);
+			w = w + 2 * ScaleCanvasCols(3, worldSize);
 		end
 		print("Map canvas:", w, "x", h, "(base", grid_size[1], "x", grid_size[2], ")");
 		WeeveeDbg("canvas " .. tostring(w) .. "x" .. tostring(h) .. " wrapX=" .. tostring(IsSnowWrapX()));

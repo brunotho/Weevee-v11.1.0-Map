@@ -14,6 +14,7 @@ Civ 5 teamer map.
 - Fixed a rare crash when loading a new game
 - Fixed rare lake tiles appearing with a luxury on them
 - Can now be installed next to 10.5
+- On map sizes other than Small, Standard-Diagonal and Oasis maps are now sized in proportion to Small
 
 **Standard and Standard-Diagonal**
 - Front mountains now look more like 10.5, and their number varies per map

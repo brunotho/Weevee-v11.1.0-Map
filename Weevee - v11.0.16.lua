@@ -6501,6 +6501,30 @@ function SeaResourceBand()
 	return SEA_RESOURCE_MIN, 15;
 end
 ------------------------------------------------------------------------------
+-- On snow climates coast_list also holds lake tiles, so lakes can get fish
+-- (GenerateGlobalResourcePlotLists). Stock's sea oil uses the same list and
+-- put oil in lakes; it gets the salt water part only.
+local PlaceOilInTheSeaVanilla = AssignStartingPlots.PlaceOilInTheSea;
+function AssignStartingPlots:PlaceOilInTheSea()
+	local all = self.coast_list;
+	local salt = {};
+	local iW = Map.GetGridSize();
+	local k = 1;
+	while all ~= nil and k <= #all do
+		local i = all[k];
+		local x = (i - 1) % iW;
+		local y = (i - 1 - x) / iW;
+		local plot = Map.GetPlot(x, y);
+		if plot ~= nil and plot:IsLake() == false then
+			table.insert(salt, i);
+		end
+		k = k + 1;
+	end
+	self.coast_list = salt;
+	PlaceOilInTheSeaVanilla(self);
+	self.coast_list = all;
+end
+------------------------------------------------------------------------------
 function CapSeaResources()
 	local seaMin, cap = SeaResourceBand();
 	local iW, iH = Map.GetGridSize();
@@ -6674,13 +6698,15 @@ end
 -- (a Peaky roll showed Silver inside a lake; every luxury placer checks
 -- CanHaveResource, so some pass must be turning an already-resourced land
 -- tile into water or copying a resource across -- not yet pinned down).
--- Real sea resources (the capped set plus Oil) are always left alone;
+-- A lake keeps nothing but fish. On salt water, real sea resources (the
+-- capped set plus Oil) are always left alone;
 -- anything else on water is re-checked with the same CanHaveResource test
 -- the engine uses (cleared first, since a present resource can skew it)
 -- and dropped if it isn't legal there. Logged with coordinates so the
 -- culprit can be traced from weevee_persist.log.
 function StripIllegalWaterResources()
 	local oilID = GameInfoTypes["RESOURCE_OIL"];
+	local fishID = GameInfoTypes["RESOURCE_FISH"];
 	local iW, iH = Map.GetGridSize();
 	local mirrored = (DEF_MIRRORED == 1);
 	local n = 0;
@@ -6692,7 +6718,11 @@ function StripIllegalWaterResources()
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil and plot:IsWater() then
 					local res = plot:GetResourceType(-1);
-					if res ~= -1 and IsCappedSeaResource(res) == false and res ~= oilID then
+					if res ~= -1 and res ~= fishID and plot:IsLake() then
+						plot:SetResourceType(-1);
+						n = n + 1;
+						WeeveeDbgPersist("Non-fish resource removed from lake: res " .. res .. " at " .. x .. "," .. y);
+					elseif res ~= -1 and IsCappedSeaResource(res) == false and res ~= oilID then
 						local amt = plot:GetNumResource();
 						plot:SetResourceType(-1);
 						-- CanHaveResource only looks at terrain, so a water tile painted

@@ -13,6 +13,7 @@ Civ 5 teamer map.
 - Players can no longer spawn right at the back edge
 - Fixed a rare crash when loading a new game
 - Fixed rare lake tiles appearing with a luxury on them
+- Lakes no longer get oil or any resource other than fish
 - Can now be installed next to 10.5
 - On map sizes other than Small, Standard-Diagonal and Oasis maps are now sized in proportion to Small
 - 4v4 maps get more luxuries, with an extra group of luxuries shared by more players

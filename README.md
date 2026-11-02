@@ -37,6 +37,8 @@ Civ 5 teamer map.
 - Mountain groups with hills where the tundra meets the snow, so the front looks less straight
 - Fewer front mountains around bigger mountain groups in the snow
 - Each side has at least two ways in through the snow, each at least 4 tiles wide
+- Coast and seas now work like Standard's: a thin back coast and bays at the map edges instead of seas in the middle of the land
+- A big island in a back-coast bay now and then, instead of on every map
 - Fixed maps with too few sea resources
 
 **Oasis**

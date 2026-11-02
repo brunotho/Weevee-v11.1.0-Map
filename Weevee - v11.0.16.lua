@@ -393,6 +393,7 @@ function GetBarrierConfig()
 			frontWallMax = 7, -- on the front line and tundra column together; more is too hard to push through
 			snowGroupsMin = 2,
 			frontOpenings = {width = 4, min = 2}, -- ways into each side through the snow after the mirror, counted per 4 tiles of width
+			backBayIslandChance = 25, -- percent of maps with a big island in a bay of the back coast
 			shapeClearRadius = {4, 5}, -- mountains at the front give way around snow shapes
 			groupSizeOdds = {50, 85}, -- percent: 1 tile below the first, 2 below the second, else 3
 			tilted = true,
@@ -5039,10 +5040,8 @@ function ShapeNoWrapBackstrip(plotTypes, iW, iH)
 	end
 end
 ------------------------------------------------------------------------------
--- Standard-Diagonal's water, built from scratch against a measured reference
--- (Murky's own salt water averaged ~7.6% of its map across 13 rolls). Runs
--- entirely on the plotTypes array (pre-Map-commit), same as the functions
--- above. Spec agreed with the user:
+-- Bramble's water (WIP climate, left as it is). Runs on the plotTypes array
+-- (pre-Map-commit), same as the functions above:
 --   ~8% of the map in salt water (natural variance, like Murky's own spread).
 --   50% of maps: all of that budget as one continuous back (west) coast.
 --   25%: 1 inland sea; 25%: 2 inland seas -- each sized 4-10 tiles and
@@ -5051,10 +5050,8 @@ end
 --     island (5-15 tiles), plus 0-6 small islands (1-4 tiles) elsewhere.
 --   Islands force-carve their own 1-tile moat rather than relying on enough
 --     open water already being there -- simpler and can't silently fail.
--- Also used by Bramble (removed from its exclusion list) -- the ~8%
--- salt-water target and 50/25/25 back-coast/1-inland/2-inland split match
--- what the user asked for ("similar amount of water as murky/standard...
--- several small inland seas or no inland seas, all back coast fine").
+-- Standard-Diagonal uses Standard's water instead (ShapeNoWrapBackstrip,
+-- PlaceStandardEdgeSeas) plus an occasional big island (PlaceBackBayIsland).
 function PlaceDiagonalBackWater(plotTypes, iW, iH)
 	if plotTypes == nil or IsTiltedMirrorAxis() == false then
 		return
@@ -5367,13 +5364,116 @@ function PlaceDiagonalBackWater(plotTypes, iW, iH)
 	WeeveeDbg(diagLine);
 end
 ------------------------------------------------------------------------------
+-- A bay in the back coast with one big island (5-15 tiles) and a moat, on
+-- cfg.backBayIslandChance percent of maps. Placed on rows where the back strip
+-- already reaches the edge, so it reads as part of the coast. Such a map
+-- grows one edge bay fewer (PlaceStandardEdgeSeas), so the climate's water
+-- stays at Standard's share on average.
+local backBayPlaced = false;
+function PlaceBackBayIsland(plotTypes, iW, iH)
+	backBayPlaced = false;
+	local cfg = GetBarrierConfig();
+	if plotTypes == nil or cfg == nil or cfg.backBayIslandChance == nil then
+		return
+	end
+	if Map.Rand(100, "Back bay island chance") >= cfg.backBayIslandChance then
+		return
+	end
+	local function setPlot(x, y, pt)
+		if x < 0 or x >= iW or y < 0 or y >= iH then
+			return
+		end
+		plotTypes[y * iW + x + 1] = pt;
+		plotTypes[(iH - y - 1) * iW + (iW - x - 1) + 1] = pt;
+	end
+	local function getPlot(x, y)
+		return plotTypes[y * iW + x + 1];
+	end
+	local function dirs(y)
+		if y % 2 == 0 then
+			return {{0, 1}, {1, 0}, {0, -1}, {-1, -1}, {-1, 0}, {-1, 1}};
+		end
+		return {{1, 1}, {1, 0}, {1, -1}, {0, -1}, {-1, 0}, {0, 1}};
+	end
+	local size = 5 + Map.Rand(11, "Back bay island size");
+	local len = 4 + Map.Rand(3, "Back bay rows");
+	local depth = math.max(4, math.ceil(size / len) + 3);
+	-- Rows whose edge tile is already water, so the bay joins the coast.
+	local starts = {};
+	for y0 = 1, iH - 1 - len do
+		local wet = 0;
+		for y = y0, y0 + len - 1 do
+			if getPlot(0, y) == PlotTypes.PLOT_OCEAN then
+				wet = wet + 1;
+			end
+		end
+		if wet * 2 >= len then
+			table.insert(starts, y0);
+		end
+	end
+	if #starts == 0 then
+		return
+	end
+	local y0 = starts[Map.Rand(#starts, "Back bay start") + 1];
+	for y = y0, y0 + len - 1 do
+		for x = 0, depth - 1 do
+			if WaterAllowedAtXY(x, y) then
+				setPlot(x, y, PlotTypes.PLOT_OCEAN);
+			end
+		end
+	end
+	local blob, inBlob = {}, {};
+	local function paint(x, y)
+		if Map.Rand(4, "Back bay island hills") == 0 then
+			setPlot(x, y, PlotTypes.PLOT_HILLS);
+		else
+			setPlot(x, y, PlotTypes.PLOT_LAND);
+		end
+		table.insert(blob, {x, y});
+		inBlob[y * iW + x] = true;
+	end
+	paint(1 + Map.Rand(math.max(1, depth - 3), "Back bay island x"), y0 + Map.Rand(len, "Back bay island y"));
+	while #blob < size do
+		local cands = {};
+		for _, p in ipairs(blob) do
+			for _, dd in ipairs(dirs(p[2])) do
+				local nx, ny = p[1] + dd[1], p[2] + dd[2];
+				if nx >= 1 and nx < depth - 1 and ny >= y0 and ny < y0 + len and inBlob[ny * iW + nx] == nil then
+					table.insert(cands, {nx, ny});
+				end
+			end
+		end
+		if #cands == 0 then
+			break
+		end
+		local pick = cands[Map.Rand(#cands, "Back bay island grow") + 1];
+		paint(pick[1], pick[2]);
+	end
+	-- Moat: every neighbour of the island that isn't island becomes water.
+	for _, p in ipairs(blob) do
+		for _, dd in ipairs(dirs(p[2])) do
+			local nx, ny = p[1] + dd[1], p[2] + dd[2];
+			if nx >= 0 and nx < iW and ny >= 0 and ny < iH and inBlob[ny * iW + nx] == nil then
+				setPlot(nx, ny, PlotTypes.PLOT_OCEAN);
+			end
+		end
+	end
+	backBayPlaced = true;
+	local line = "Back bay island: size " .. #blob .. " rows " .. y0 .. "-" .. (y0 + len - 1) .. " depth " .. depth;
+	print(line);
+	WeeveeDbgPersist(line);
+end
+------------------------------------------------------------------------------
+-- Standard and Standard-Diagonal: 1-2 bays growing in from the west, north or
+-- south map edge. On Diagonal the north/south seeds stop at the fold.
 function PlaceStandardEdgeSeas(plotTypes, iW, iH)
-	if plotTypes == nil or IsStandardClimate() == false or IsTiltedMirrorAxis() then
-		-- Standard-Diagonal's water (back coast, inland seas, islands) is
-		-- entirely handled by PlaceDiagonalBackWater instead, from scratch.
+	if plotTypes == nil or IsStandardClimate() == false then
 		return
 	end
 	local cutIgnored, seas = ResolveSaltWaterPlan();
+	if backBayPlaced and seas ~= nil then
+		seas = seas - 1;
+	end
 	if seas == nil or seas < 1 then
 		return
 	end
@@ -7689,13 +7789,11 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 	if IsSnowNoWrap() then
 		if IsOasisClimate() then
 			FillOasisWestNoOcean(self.wholeworldPlotTypes, iW, iH);
-		elseif IsTiltedMirrorAxis() then
-			-- Standard-Diagonal and Bramble both use this (Bramble's water
-			-- target/spread was explicitly matched to it -- see
-			-- PlaceDiagonalBackWater's own comment).
+		elseif IsBramble() then
 			PlaceDiagonalBackWater(self.wholeworldPlotTypes, iW, iH);
 		else
 			ShapeNoWrapBackstrip(self.wholeworldPlotTypes, iW, iH);
+			PlaceBackBayIsland(self.wholeworldPlotTypes, iW, iH);
 		end
 	end
 	PlaceStandardEdgeSeas(self.wholeworldPlotTypes, iW, iH);

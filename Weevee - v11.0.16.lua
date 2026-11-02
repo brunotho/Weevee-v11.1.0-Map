@@ -9064,18 +9064,21 @@ function TryRelocateLuxury(plot, isBanned, maxRadius)
 	return true
 end
 ------------------------------------------------------------------------------
-function LuxuryPlayableMaxX(iW)
-	if DEF_MIRRORED == 1 then
-		return math.floor(iW / 2);
+-- The tiles the luxury quota counts, pads and trims: the side the mirror
+-- keeps. On Standard-Diagonal that side follows the fold, so a fixed
+-- x <= mid counted tiles the mirror overwrites and missed kept ones past mid.
+function LuxuryCountedPlot(x, y)
+	if DEF_MIRRORED ~= 1 then
+		return true
 	end
-	return iW - 1;
+	return MirrorSourcePlot(x, y);
 end
 ------------------------------------------------------------------------------
 -- counts[type] = copies on the west half; have[k] = types with at least k
 -- copies, for each tier in ResolveLuxTargets.
 function GatherLuxuryTiers()
 	local iW, iH = Map.GetGridSize();
-	local maxX = LuxuryPlayableMaxX(iW);
+	local maxX = iW - 1;
 	local nTiers = #ResolveLuxTargets();
 	local counts = {};
 	local y = 0;
@@ -9083,7 +9086,7 @@ function GatherLuxuryTiers()
 		local x = 0;
 		while x <= maxX do
 			local plot = Map.GetPlot(x, y);
-			if plot ~= nil then
+			if plot ~= nil and LuxuryCountedPlot(x, y) then
 				local res = plot:GetResourceType(-1);
 				if IsWeeveeLuxuryID(res) then
 					counts[res] = (counts[res] or 0) + 1;
@@ -9129,7 +9132,7 @@ function EnsureLuxuryQuota()
 	banned[GameInfoTypes["RESOURCE_JEWELRY"] or -2] = true;
 	banned[GameInfoTypes["RESOURCE_PORCELAIN"] or -2] = true;
 	local iW, iH = Map.GetGridSize();
-	local maxX = LuxuryPlayableMaxX(iW);
+	local maxX = iW - 1;
 	local starts = {};
 	local pi = 0;
 	while pi < GameDefines.MAX_MAJOR_CIVS do
@@ -9158,7 +9161,7 @@ function EnsureLuxuryQuota()
 			local x = 0;
 			while x <= maxX do
 				local plot = Map.GetPlot(x, y);
-				if plot ~= nil then
+				if plot ~= nil and LuxuryCountedPlot(x, y) then
 					local res = plot:GetResourceType(-1);
 					if IsWeeveeLuxuryID(res) then
 						local dist = Map.PlotDistance(px, py, x, y);
@@ -9185,7 +9188,7 @@ function EnsureLuxuryQuota()
 			while x <= maxX do
 				if skip[x] ~= true and nearStart(x, y) == false then
 					local plot = Map.GetPlot(x, y);
-					if plot ~= nil
+					if plot ~= nil and LuxuryCountedPlot(x, y)
 						and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN
 						and plot:GetResourceType(-1) == -1
 						and LuxuryLegalAt(plot, luxID)
@@ -9221,7 +9224,7 @@ function EnsureLuxuryQuota()
 			while x <= maxX do
 				if skip[x] ~= true and nearStart(x, y) == false then
 					local plot = Map.GetPlot(x, y);
-					if plot ~= nil
+					if plot ~= nil and LuxuryCountedPlot(x, y)
 						and plot:IsWater() == false
 						and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN
 						and plot:GetResourceType(-1) == -1
@@ -9289,7 +9292,7 @@ function EnsureLuxuryQuota()
 			while x <= maxX do
 				if skip[x] ~= true and nearStart(x, y) == false then
 					local plot = Map.GetPlot(x, y);
-					if plot ~= nil
+					if plot ~= nil and LuxuryCountedPlot(x, y)
 						and plot:IsWater() == false
 						and plot:GetPlotType() == PlotTypes.PLOT_LAND
 						and plot:GetResourceType(-1) == -1 then
@@ -9468,14 +9471,14 @@ function TrimLuxuryQuotaExcess(asp)
 		protected[asp.marble_ID] = true;
 	end
 	local iW, iH = Map.GetGridSize();
-	local maxX = LuxuryPlayableMaxX(iW);
+	local maxX = iW - 1;
 	local function removeOneCopy(resID)
 		local y = 0;
 		while y < iH do
 			local x = 0;
 			while x <= maxX do
 				local plot = Map.GetPlot(x, y);
-				if plot ~= nil and plot:GetResourceType(-1) == resID then
+				if plot ~= nil and LuxuryCountedPlot(x, y) and plot:GetResourceType(-1) == resID then
 					plot:SetResourceType(-1);
 					return true
 				end

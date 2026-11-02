@@ -3250,7 +3250,7 @@ function ResetWeeveeMapAttempt()
 	brambleShapeReady = false;
 	brambleLo = {};
 	brambleHi = {};
-	luxTargetResolved = false;
+	-- Luxury targets stay as rolled for the whole game (ResolveLuxTargets).
 	weeveeStartDistFail = false;
 end
 function ResolveClimateScale()
@@ -8837,6 +8837,9 @@ end
 -- One civ per side (1v1 on Duel) has its own smaller targets: 10.5 had no
 -- numbers for it, so these are what Duel maps actually reached, and stock
 -- disables 11 luxury types on Duel.
+-- Rolled once per game, not per attempt: a fresh roll on each retry let
+-- high targets, which miss more often, be swapped for lower ones, so kept
+-- maps leaned low (Small Diagonal: 19.0 kept against 19.9 rolled, 72 games).
 local LUX_UNIQUE_RANGE = {15, 24};
 local LUX_MIDDLE_RANGE = {7, 13};
 local LUX_TOP_TIER = 3;

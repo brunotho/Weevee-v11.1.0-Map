@@ -36,7 +36,7 @@ Civ 5 teamer map.
 **Standard-Diagonal**
 - Mountain groups with hills where the tundra meets the snow, so the front looks less straight
 - Fewer front mountains around bigger mountain groups in the snow
-- Maps with too small a gap through the front are rerolled
+- Each side has at least two ways in through the snow, each at least 4 tiles wide
 - Fixed maps with too few sea resources
 
 **Oasis**

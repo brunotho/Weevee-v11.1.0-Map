@@ -392,7 +392,7 @@ function GetBarrierConfig()
 			barrierMountainMax = 10, -- snow and contact mountains per side
 			frontWallMax = 7, -- on the front line and tundra column together; more is too hard to push through
 			snowGroupsMin = 2,
-			frontGapMin = 4, -- rows free of mountains somewhere across the front, after the mirror
+			frontOpenings = {width = 4, min = 2}, -- ways into each side through the snow after the mirror, counted per 4 tiles of width
 			shapeClearRadius = {4, 5}, -- mountains at the front give way around snow shapes
 			groupSizeOdds = {50, 85}, -- percent: 1 tile below the first, 2 below the second, else 3
 			tilted = true,
@@ -2703,7 +2703,6 @@ end
 local weeveeStartDistFail = false;
 local weeveeStartDesertFail = false;
 local weeveeLastAttempt = false;
-local weeveeFrontGapFail = false;
 function EnforceMinStartDistance(asp, minDist)
 	if minDist == nil then
 		minDist = 7;
@@ -6772,43 +6771,383 @@ function LogLakesWithRiverEdges(stage, wholeMap)
 	print("Lakes with river edges [" .. stage .. "]:", n);
 end
 ------------------------------------------------------------------------------
--- After the mirror: the widest run of rows with no mountain from the front line
--- through the snow. The field keeps an opening on the front line, but the snow's
--- mountains and their mirror copies can block it, which only shows once both halves
--- exist. Too narrow rejects the map (cfg.frontGapMin). The east's line mirrors the
--- west's, so checking one is enough.
-function CheckFrontGap()
+-- After the mirror: how well a side can be attacked. Late in the game one
+-- team crosses the snow and attacks the other, so what counts is the way in:
+-- from the far edge of the snow, across both snow halves (the mirror decides
+-- what lies in the center), through the defender's snow, tundra and front
+-- line. The attacker's own line doesn't matter, and mountains behind the
+-- defender's tundra are its normal defence. A passage can bend; its width is
+-- its narrowest point. Each opening counts once per cfg.frontOpenings.width
+-- tiles of width; each side needs cfg.frontOpenings.min of those. The east's
+-- strip is the mirror of the west's, so the west is measured. Short of the
+-- minimum, the cheapest corridors are carved: their mountains turn into
+-- hills, each together with its mirror copy, so both sides stay identical;
+-- snow mountains cost more than front line and tundra ones
+-- (CheapestFrontCorridor). Repairing instead of rerolling keeps maps with
+-- mountainous snow, which a reroll filtered out.
+function FrontBarrierBand()
 	local cfg = GetBarrierConfig();
-	if cfg == nil or cfg.frontGapMin == nil then
-		return
-	end
 	local iW, iH = Map.GetGridSize();
 	local _, centerN = ResolveSnowWrapWidths();
 	local half = centerN / 2;
-	local widest, run = 0, 0;
+	local tiles, index, west, source, sink = {}, {}, {}, {}, {};
+	local function add(plot)
+		local i = plot:GetY() * iW + plot:GetX();
+		if index[i] == nil then
+			table.insert(tiles, plot);
+			index[i] = #tiles;
+		end
+		return index[i];
+	end
 	for y = 1, iH - 2 do
 		local fold = math.floor(iW / 2);
 		if cfg.tilted == true then
 			fold = TiltedFoldMid(y);
 		end
-		local blocked = false;
-		for x = fold - (half + 2), fold + half - 1 do
+		for x = fold - half - 2, fold - 1 do
 			local plot = Map.GetPlot(x, y);
-			if plot ~= nil and plot:IsMountain() then
-				blocked = true;
+			local copy = plot ~= nil and getMirroredPlot(plot) or nil;
+			if plot ~= nil and copy ~= nil then
+				local k = add(plot);
+				-- 1: front line or tundra, 2: snow; the west snow's copy is the
+				-- east snow half, and the copy of its column nearest the tundra
+				-- is the snow's far edge.
+				if x <= fold - half - 1 then
+					west[k] = 1;
+				else
+					west[k] = 2;
+					local m = add(copy);
+					if x == fold - half then
+						sink[m] = true;
+					end
+				end
+				if x == fold - half - 2 then
+					source[k] = true;
+				end
 			end
 		end
-		if blocked then
-			run = 0;
-		else
-			run = run + 1;
-			widest = math.max(widest, run);
+	end
+	return tiles, index, west, source, sink;
+end
+------------------------------------------------------------------------------
+-- Widths of the openings through the band: a minimum vertex cut between the
+-- front line and the snow's far edge (blocked tiles removed), split into
+-- groups of adjacent cut tiles, one group per opening.
+function MeasureFrontOpenings(tiles, index, source, sink, blocked)
+	local iW = Map.GetGridSize();
+	local n = #tiles;
+	local S, T = 2 * n + 1, 2 * n + 2;
+	-- Only tiles may be cut: every other link is unlimited.
+	local BIG = 2 * n + 2;
+	local head, nxt, to, cap = {}, {}, {}, {};
+	local function edge(a, b, c)
+		table.insert(to, b); table.insert(cap, c); table.insert(nxt, head[a] or 0); head[a] = #to;
+		table.insert(to, a); table.insert(cap, 0); table.insert(nxt, head[b] or 0); head[b] = #to;
+	end
+	local function neighbours(k)
+		local list = {};
+		local p = tiles[k];
+		for dir = 0, 5 do
+			local q = PlotDirNoXWrap(p:GetX(), p:GetY(), dir);
+			local j = nil;
+			if q ~= nil then
+				j = index[q:GetY() * iW + q:GetX()];
+			end
+			if j ~= nil and blocked[j] ~= true then
+				table.insert(list, j);
+			end
+		end
+		return list;
+	end
+	for k = 1, n do
+		if blocked[k] ~= true then
+			edge(2 * k - 1, 2 * k, 1);
+			for _, j in ipairs(neighbours(k)) do
+				edge(2 * k, 2 * j - 1, BIG);
+			end
+			if source[k] then
+				edge(S, 2 * k - 1, BIG);
+			end
+			if sink[k] then
+				edge(2 * k, T, BIG);
+			end
 		end
 	end
-	if widest < cfg.frontGapMin then
-		weeveeFrontGapFail = true;
+	local function reach()
+		local seen, prev, queue = {[S] = true}, {}, {S};
+		local qi = 1;
+		while qi <= #queue do
+			local v = queue[qi];
+			qi = qi + 1;
+			local e = head[v] or 0;
+			while e > 0 do
+				if cap[e] > 0 and seen[to[e]] == nil then
+					seen[to[e]] = true;
+					prev[to[e]] = e;
+					table.insert(queue, to[e]);
+				end
+				e = nxt[e];
+			end
+		end
+		return seen, prev;
 	end
-	local line = "Front gap after mirror: widest " .. widest .. " rows, minimum " .. cfg.frontGapMin;
+	while true do
+		local seen, prev = reach();
+		if seen[T] == nil then
+			break
+		end
+		local v = T;
+		while v ~= S do
+			local e = prev[v];
+			cap[e] = cap[e] - 1;
+			local r = e + 1;
+			if e % 2 == 0 then
+				r = e - 1;
+			end
+			cap[r] = cap[r] + 1;
+			v = to[r];
+		end
+	end
+	local seen = reach();
+	local cut = {};
+	for k = 1, n do
+		if blocked[k] ~= true and seen[2 * k - 1] and seen[2 * k] == nil then
+			cut[k] = true;
+		end
+	end
+	local widths, done = {}, {};
+	for k = 1, n do
+		if cut[k] and done[k] == nil then
+			local size, stack = 0, {k};
+			done[k] = true;
+			while #stack > 0 do
+				local v = table.remove(stack);
+				size = size + 1;
+				for _, j in ipairs(neighbours(v)) do
+					if cut[j] and done[j] == nil then
+						done[j] = true;
+						table.insert(stack, j);
+					end
+				end
+			end
+			table.insert(widths, size);
+		end
+	end
+	table.sort(widths, function(a, b) return a > b end);
+	return widths;
+end
+------------------------------------------------------------------------------
+-- Openings counted once per w tiles of width.
+function FrontOpeningScore(widths, w)
+	local lanes = 0;
+	for _, x in ipairs(widths) do
+		lanes = lanes + math.floor(x / w);
+	end
+	return lanes;
+end
+------------------------------------------------------------------------------
+-- Cheapest corridor w tiles wide from the west front line to the snow's far
+-- edge that crosses the band's middle column at row through: a stack of rows that moves
+-- one column east per step and may shift one row. Open tiles cost nothing, a
+-- front line or tundra mountain 1, a snow mountain 3 (a copy costs as its
+-- original); water can't be used. Returns the corridor's tiles and cost, or nil.
+function CheapestFrontCorridor(tiles, index, west, rows, w, through)
+	local iW, iH = Map.GetGridSize();
+	local function tileCost(k)
+		if k == nil or tiles[k]:IsWater() then
+			return nil
+		end
+		if tiles[k]:IsMountain() == false then
+			return 0
+		end
+		local class = west[k];
+		if class == nil then
+			local copy = getMirroredPlot(tiles[k]);
+			class = west[index[copy:GetY() * iW + copy:GetX()]] or 2;
+		end
+		if class == 1 then
+			return 1
+		end
+		return 3
+	end
+	-- h rows from y in column c. A step that shifts a row covers both
+	-- positions (w + 1 rows); a plain w-row shift narrows to w - 1 on hexes.
+	local function stack(c, y, h)
+		local list, cost = {}, 0;
+		for i = 0, h - 1 do
+			local row = rows[y + i];
+			if row == nil or row[c] == nil then
+				return nil
+			end
+			local tc = tileCost(row[c]);
+			if tc == nil then
+				return nil
+			end
+			cost = cost + tc;
+			table.insert(list, row[c]);
+		end
+		return list, cost;
+	end
+	local width = 0;
+	for _, row in pairs(rows) do
+		width = math.max(width, #row);
+	end
+	local middle = math.floor((width + 1) / 2);
+	local best, prev = {}, {};
+	local function key(c, y)
+		return c * 1000 + y;
+	end
+	for y = 1, iH - 1 - w do
+		local list, cost = stack(1, y, w);
+		if list ~= nil then
+			best[key(1, y)] = cost;
+		end
+	end
+	for c = 2, width do
+		for y = 1, iH - 1 - w do
+			if c ~= middle or y == through then
+				for dy = -1, 1 do
+					local from = best[key(c - 1, y + dy)];
+					local list, cost = stack(c, math.min(y, y + dy), w + math.abs(dy));
+					if from ~= nil and list ~= nil and (best[key(c, y)] == nil or from + cost < best[key(c, y)]) then
+						best[key(c, y)] = from + cost;
+						prev[key(c, y)] = y + dy;
+					end
+				end
+			end
+		end
+	end
+	local endY, endCost = nil, nil;
+	for y = 1, iH - 1 - w do
+		local cost = best[key(width, y)];
+		if cost ~= nil and (endCost == nil or cost < endCost) then
+			endY, endCost = y, cost;
+		end
+	end
+	if endY == nil then
+		return nil
+	end
+	local corridor = {};
+	local y = endY;
+	for c = width, 1, -1 do
+		local from = y;
+		if c > 1 then
+			from = prev[key(c, y)];
+		end
+		for _, k in ipairs((stack(c, math.min(y, from), w + math.abs(y - from)))) do
+			table.insert(corridor, k);
+		end
+		y = from;
+	end
+	return corridor, endCost;
+end
+------------------------------------------------------------------------------
+function EnsureFrontOpenings()
+	local cfg = GetBarrierConfig();
+	if cfg == nil or cfg.frontOpenings == nil then
+		return
+	end
+	local w, need = cfg.frontOpenings.width, cfg.frontOpenings.min;
+	local iW, iH = Map.GetGridSize();
+	local tiles, index, west, source, sink = FrontBarrierBand();
+	local function mirrorOf(k)
+		local copy = getMirroredPlot(tiles[k]);
+		return index[copy:GetY() * iW + copy:GetX()];
+	end
+	local blocked = {};
+	for k, plot in ipairs(tiles) do
+		if plot:IsWater() or plot:IsMountain() then
+			blocked[k] = true;
+		end
+	end
+	-- Band tiles per row, west to east.
+	local rows = {};
+	for k, plot in ipairs(tiles) do
+		local y = plot:GetY();
+		rows[y] = rows[y] or {};
+		table.insert(rows[y], k);
+	end
+	for _, row in pairs(rows) do
+		table.sort(row, function(a, b) return tiles[a]:GetX() < tiles[b]:GetX() end);
+	end
+	local function total(t)
+		local s = 0;
+		for _, x in ipairs(t) do
+			s = s + x;
+		end
+		return s;
+	end
+	local widths = MeasureFrontOpenings(tiles, index, source, sink, blocked);
+	local lanes = FrontOpeningScore(widths, w);
+	local before = widths;
+	local removed = {0, 0};
+	local carved = 0;
+	while lanes < need do
+		-- Every corridor through the middle, tried on a copy: the cheapest that
+		-- adds an opening wins; failing that, the cheapest that widens any.
+		local pick = nil;
+		for through = 1, iH - 1 - w do
+			local corridor, cost = CheapestFrontCorridor(tiles, index, west, rows, w, through);
+			if corridor ~= nil and cost > 0 then
+				local trial = {};
+				for k, b in pairs(blocked) do
+					trial[k] = b;
+				end
+				for _, k in ipairs(corridor) do
+					if tiles[k]:IsMountain() then
+						trial[k] = nil;
+						local m = mirrorOf(k);
+						if m ~= nil and tiles[m]:IsMountain() then
+							trial[m] = nil;
+						end
+					end
+				end
+				local tw = MeasureFrontOpenings(tiles, index, source, sink, trial);
+				local tl = FrontOpeningScore(tw, w);
+				local gain = tl - lanes;
+				local wider = total(tw) > total(widths);
+				if gain > 0 or wider then
+					local better = pick == nil
+						or (gain > 0 and pick.gain <= 0)
+						or ((gain > 0) == (pick.gain > 0) and (cost < pick.cost or (cost == pick.cost and tl > pick.lanes)));
+					if better then
+						pick = {corridor = corridor, cost = cost, gain = gain, lanes = tl, widths = tw};
+					end
+				end
+			end
+		end
+		if pick == nil then
+			break
+		end
+		-- The copy of a front line or tundra tile lies on the attacker's line,
+		-- outside the strip, so copies are changed on the map, not by index.
+		for _, k in ipairs(pick.corridor) do
+			if tiles[k]:IsMountain() then
+				local class = west[k] or west[mirrorOf(k)] or 2;
+				for _, plot in ipairs({tiles[k], getMirroredPlot(tiles[k])}) do
+					if plot:IsMountain() then
+						plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
+						local j = index[plot:GetY() * iW + plot:GetX()];
+						if j ~= nil then
+							blocked[j] = nil;
+						end
+						removed[class] = removed[class] + 1;
+					end
+				end
+			end
+		end
+		carved = carved + 1;
+		widths, lanes = pick.widths, pick.lanes;
+	end
+	local function list(t)
+		if #t == 0 then
+			return "none";
+		end
+		return table.concat(t, " ");
+	end
+	local line = "Front openings after mirror: widths " .. list(before)
+		.. " | carved " .. carved .. " corridors, " .. (removed[1] + removed[2]) .. " mountains to hills (front line and tundra " .. removed[1] .. ", snow " .. removed[2] .. ")"
+		.. " | final widths " .. list(widths) .. " = " .. lanes .. " openings of " .. w .. ", minimum " .. need;
 	print(line);
 	WeeveeDbgPersist(line);
 end
@@ -21955,7 +22294,7 @@ function StartPlotSystem()
 	end
 	WeeveeDbgCall("LogRiverCheck", LogRiverCheck);
 	WeeveeDbgCall("LogLandResourcesOnWater", LogLandResourcesOnWater);
-	WeeveeDbgCall("CheckFrontGap", CheckFrontGap);
+	WeeveeDbgCall("EnsureFrontOpenings", EnsureFrontOpenings);
 	LogLakesWithRiverEdges("after mirror", true);
 	WeeveeDbgCall("WeeveeDbgBarrierWidths", WeeveeDbgBarrierWidths);
 	WeeveeDbgCall("WeeveeDbgWaterCount", WeeveeDbgWaterCount);
@@ -22132,7 +22471,6 @@ function GenerateMap()
 		end
 		weeveeStartDistFail = false;
 		weeveeStartDesertFail = false;
-		weeveeFrontGapFail = false;
 		weeveeLastAttempt = (attempt == maxAttempts);
 		CoreGenerateMap();
 		local ok, have = LuxuryQuotaMet();
@@ -22143,13 +22481,10 @@ function GenerateMap()
 		if weeveeStartDesertFail then
 			print("Capital desert limit rejected");
 		end
-		if weeveeFrontGapFail then
-			print("Front gap rejected");
-		end
 		if ok ~= true then
 			print("Luxury quota missed");
 		end
-		if ok and weeveeStartDistFail ~= true and weeveeStartDesertFail ~= true and weeveeFrontGapFail ~= true then
+		if ok and weeveeStartDistFail ~= true and weeveeStartDesertFail ~= true then
 			print("Map accepted, luxuries " .. LuxTierText(have, want));
 			return
 		end

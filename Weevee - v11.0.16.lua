@@ -6491,8 +6491,17 @@ function AssignStartingPlots:PlaceFish(frequency, plot_list)
 	PlaceFishVanilla(self, frequency, plot_list);
 end
 ------------------------------------------------------------------------------
+-- Sea resources per side: SEA_RESOURCE_MIN to this cap, the same from Tiny
+-- up; Duel's much smaller map gets 5 to 8.
+function SeaResourceBand()
+	if Map.GetWorldSize() == GameInfo.Worlds.WORLDSIZE_DUEL.ID then
+		return 5, 8;
+	end
+	return SEA_RESOURCE_MIN, 15;
+end
+------------------------------------------------------------------------------
 function CapSeaResources()
-	local cap = 15;
+	local seaMin, cap = SeaResourceBand();
 	local iW, iH = Map.GetGridSize();
 	local fishID = GameInfoTypes["RESOURCE_FISH"];
 	local fishPlots = {};
@@ -6526,7 +6535,7 @@ function CapSeaResources()
 	end
 	WeeveeDbgPersist("SEA RES kind=" .. resKind .. " tilted=" .. tostring(IsTiltedMirrorAxis())
 		.. " iW=" .. iW .. " natural=" .. n .. " fish=" .. nFish .. " coastLux=" .. nOther
-		.. " band=" .. SEA_RESOURCE_MIN .. ".." .. cap);
+		.. " band=" .. seaMin .. ".." .. cap);
 	if n <= cap then
 		print("Sea resources (pre-mirror):", n, "fish=", nFish, "coastLux=", nOther);
 		return
@@ -6567,14 +6576,15 @@ function EnsureSeaResourceMinimum()
 	if fishID == nil then
 		return
 	end
-	local minWant = SEA_RESOURCE_MIN;
+	local seaMin, seaCap = SeaResourceBand();
+	local minWant = seaMin;
 	-- Peaky's natural count sat right at the floor (9, 9). Its water stays as
 	-- is; instead top up to a per-roll target shaped like Standard's natural
 	-- spread (logged 9-14, mean ~11.5): 9 + Rand(4) + Rand(3) = 9..14,
-	-- mean 11.5, peaked in the middle.
+	-- mean 11.5, peaked in the middle. Never above the cap (Duel's is 8).
 	local seaCfg = GetBarrierConfig();
 	if seaCfg ~= nil and seaCfg.kind == "peaks" then
-		minWant = SEA_RESOURCE_MIN + Map.Rand(4, "Peaks sea res A") + Map.Rand(3, "Peaks sea res B");
+		minWant = math.min(seaCap, seaMin + Map.Rand(4, "Peaks sea res A") + Map.Rand(3, "Peaks sea res B"));
 		WeeveeDbgPersist("SEA RES peaks floor target=" .. minWant);
 	end
 	local iW, iH = Map.GetGridSize();

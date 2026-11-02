@@ -22116,11 +22116,15 @@ function GenerateMap()
 		if weeveeFrontGapFail then
 			print("Front gap rejected");
 		end
+		if ok ~= true then
+			print("Luxury quota missed");
+		end
 		if ok and weeveeStartDistFail ~= true and weeveeStartDesertFail ~= true and weeveeFrontGapFail ~= true then
-			print("Luxury quota accepted " .. LuxTierText(have, want));
+			print("Map accepted, luxuries " .. LuxTierText(have, want));
 			return
 		end
-		print("Luxury quota rejected " .. LuxTierText(have, want));
+		-- The reasons are the "... rejected" / "missed" lines just above.
+		print("Map rejected, luxuries " .. LuxTierText(have, want));
 		if attempt >= maxAttempts then
 			print("Map retry exhausted, keeping last map");
 			return

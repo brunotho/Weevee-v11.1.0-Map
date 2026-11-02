@@ -53,6 +53,7 @@ Agent steps (in order)
 3. git mv the map lua:
      Weevee - vOLD.lua  ->  Weevee - vX.Y.Z.lua
 4. Update this file: set Current version, set Next version (patch +1).
+   In README.md, rename the changelog's "Next version" heading to X.Y.Z.
 5. Commit ALL playable map changes in that bump (not only the rename),
    message focused on why, then push to origin.
 6. gh repo rename Weevee-vX.Y.Z-Map

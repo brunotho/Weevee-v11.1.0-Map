@@ -1,0 +1,41 @@
+# Weevee Map
+
+Civ 5 teamer map.
+
+## Changelog
+
+### Next version
+
+**All climates**
+- Capitals now have at most 4 luxuries, usually exactly 4, and closer to the city
+- More luxuries can land on hills or flat land as in 10.5, like jade and amber on hills
+- Water stays at least 6 tiles from the center
+- Players can no longer spawn right at the back edge
+- Fixed a rare crash when loading a new game
+- Fixed rare lake tiles appearing with a luxury on them
+- Can now be installed next to 10.5
+
+**Standard and Standard-Diagonal**
+- Front mountains now look more like 10.5, and their number varies per map
+- Rare extra mountains right in front of the snow, and rare small mountain chunks near the front
+- Tundra column in front of the center snow
+- Center snow has no forests and more varied mountains and hills
+- Fewer long rivers running along the front
+
+**Standard, Standard-Diagonal, Murky and Peaky**
+- Capitals no longer spawn with lots of flat desert around them
+
+**Standard, Standard-Diagonal, Murky, Oasis and Peaky**
+- Rivers no longer end on dry land
+
+**Standard-Diagonal**
+- Mountain groups with hills where the tundra meets the snow, so the front looks less straight
+- Fewer front mountains around bigger mountain groups in the snow
+- Maps with too small a gap through the front are rerolled
+- Fixed maps with too few sea resources
+
+**Oasis**
+- Fewer stray grass tiles with a luxury in the middle of the desert
+
+**Peaky**
+- 1-3 small islands added to the back ocean

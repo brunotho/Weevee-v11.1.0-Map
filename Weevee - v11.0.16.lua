@@ -100,18 +100,12 @@ local WORLD_WRAP_FROZEN_OPS = 1;
 -- Frozen value of the former "Front Mountain %" custom option (was the
 -- default, 25%) now that the option itself has been removed.
 local FRONT_MOUNTAIN_DENSITY = 0.25;
--- Per-side mountain budget for the front mountain field (5 columns).
--- Mirrored automatically to the other front. Static for now while the new
--- field design (PlaceFrontMountainField) is being tuned from scratch.
+-- Per-side mountain budget for the five-column front (frontMountains = "field").
 local FRONT_MOUNTAIN_BUDGET = 15;
--- Kept separate from FRONT_MOUNTAIN_BUDGET in case Standard-Diagonal needs
--- to diverge again later (it reads busier at the same budget, since its
--- field traces the fold instead of straight columns).
-local FRONT_MOUNTAIN_BUDGET_DIAGONAL = 15;
--- Standard: mountains per side as a share of the map height, all in one
--- column (the 10.5 layout at its 25% setting). See PlaceFrontMountainField's
--- Standard call.
-local FRONT_MOUNTAIN_STANDARD_SHARE = 0.25;
+-- One-column front (frontMountains = "line"): mountains per side as a share of
+-- the map height, one of these per map (10.5's 20-30% settings; 5, 6 or 7 on a
+-- small map).
+local FRONT_MOUNTAIN_LINE_SHARES = {0.20, 0.25, 0.30};
 -- No contiguous mountain blob touching the front ridges may exceed this
 -- many tiles, counting merges with mountains from the normal terrain pass.
 local FRONT_MOUNTAIN_CLUMP_CAP = 5;
@@ -120,11 +114,6 @@ local FRONT_FOOTHILL_CHANCE = 90;
 -- Inverse rule: chance a hill with NO adjacent mountain gets demoted back
 -- to flat, thinning out hills that aren't actually next to what made them.
 local FRONT_DEHILL_CHANCE = 15;
--- Testing switch: when true, PurgeFrontMountainColumns still runs (clearing
--- tectonics' mountains out of the front's 3-column zone) but
--- PlaceFrontMountainField is skipped, so the purge alone can be judged
--- in-game before the field is layered back on top of a clean slate.
-local DISABLE_FRONT_MOUNTAIN_RIDGES = false;
 -- Bramble's solid, deterministic jungle ring right at the tundra edge (see
 -- BrambleAddJungle). Also used by TongueResourcePlotOk/TongueIsHomePlot to
 -- keep resources out of that ring -- stock passes like AddForestToResource
@@ -139,6 +128,8 @@ local BRAMBLE_JUNGLE_CORE_DEPTH = 3;
 -- Wonders that landed in columns 4-5 after generation already committed to
 -- a layout. Always reassigned fresh in GeneratePlotTypes before it's read.
 local frontMountainZones = {};
+-- The random decisions behind this attempt's mountains, for LogMountainRoll.
+local mountainRoll = {};
 local SPLIT_SNOW = 1;
 local SPLIT_SNOW_V2 = 2;
 local SPLIT_WETLAND = 3;
@@ -190,6 +181,11 @@ local riverWaterDist = nil;
 -- within RIVER_FRONT_ZONE tiles of the barrier.
 local riverFrontDist = nil;
 RIVER_FRONT_ZONE = 4;
+-- Width of the front zone: the default, or the climate's cfg.riverFrontZone.
+function RiverFrontZone()
+	local cfg = GetBarrierConfig();
+	return cfg ~= nil and cfg.riverFrontZone or RIVER_FRONT_ZONE;
+end
 
 ------------------------------------------------------------------------------
 function GetResourceSetting()
@@ -288,10 +284,13 @@ function GetBarrierConfig()
 			iceLakePermille = 0,
 			forestPct = 0,
 			oasisPctOfFlat = 0,
-			-- Standard's front mountains use their own column-weighted ridge
-			-- design (see the front-mountain dispatch below), not the
-			-- generic chaotic ridge.
 			chaoticMountains = false,
+			frontMountains = "line",
+			repairDeadEndRivers = true,
+			frontLuxuries = {1, 3},
+			capitalDesertMax = 3,
+			riverFrontZone = 6,
+			riversFlowWest = true,
 		};
 	end
 	if ops == SPLIT_DESERT then
@@ -304,6 +303,9 @@ function GetBarrierConfig()
 			forestPct = 0,
 			oasisPctOfFlat = 5,
 			chaoticMountains = true,
+			frontMountains = "field",
+			repairDeadEndRivers = true,
+			riverRepairLakes = false, -- this climate has no lakes
 		};
 	end
 	if ops == SPLIT_WASTELAND then
@@ -316,6 +318,7 @@ function GetBarrierConfig()
 			forestPct = 0,
 			oasisPctOfFlat = 0,
 			chaoticMountains = true,
+			frontMountains = "ridge",
 			falloutBarrierPct = 30,
 			falloutPlayableNearPct = 6,
 			falloutPlayableFarPct = 18,
@@ -330,11 +333,11 @@ function GetBarrierConfig()
 			iceLakePermille = 0,
 			forestPct = 0,
 			oasisPctOfFlat = 0,
-			-- Murky's front mountains use the column-weighted ridge design
-			-- (see the front-mountain dispatch below), not the generic
-			-- chaotic ridge, so it gets the narrower default foothill band
-			-- to match (see chaoticMountains' other use sites).
+			-- False for the narrower default foothill band.
 			chaoticMountains = false,
+			frontMountains = "field",
+			repairDeadEndRivers = true,
+			capitalDesertMax = 3,
 			marshBarrierPct = 34,
 			jungleBarrierPct = 0,
 			forestBarrierPct = 22,
@@ -350,6 +353,9 @@ function GetBarrierConfig()
 			forestPct = 0,
 			oasisPctOfFlat = 0,
 			chaoticMountains = false,
+			frontMountains = "field",
+			repairDeadEndRivers = true,
+			capitalDesertMax = 3,
 		};
 	end
 	if ops == SPLIT_FROSTY then
@@ -365,10 +371,8 @@ function GetBarrierConfig()
 			iceLakePermille = 0,
 			forestPct = 0,
 			oasisPctOfFlat = 0,
-			-- Front mountains now use the column-weighted ridge design (see
-			-- the front-mountain dispatch below), not the generic chaotic
-			-- ridge.
 			chaoticMountains = false,
+			frontMountains = "field",
 		};
 	end
 	if ops == SPLIT_TONGUE then
@@ -378,10 +382,23 @@ function GetBarrierConfig()
 			mountainPct = 2,
 			hillPct = 24,
 			iceLakePermille = 0,
-			forestPct = 14,
+			forestPct = 0,
 			oasisPctOfFlat = 0,
 			chaoticMountains = false,
+			frontMountains = "line",
+			repairDeadEndRivers = true,
+			contactMountains = {1, 3},
+			snowMountainMax = 5,
+			barrierMountainMax = 10, -- snow and contact mountains per side
+			frontWallMax = 7, -- on the front line and tundra column together; more is too hard to push through
+			snowGroupsMin = 2,
+			frontGapMin = 4, -- rows free of mountains somewhere across the front, after the mirror
+			shapeClearRadius = {4, 5}, -- mountains at the front give way around snow shapes
+			groupSizeOdds = {50, 85}, -- percent: 1 tile below the first, 2 below the second, else 3
 			tilted = true,
+			capitalDesertMax = 3,
+			riverFrontZone = 6,
+			riversFlowWest = true,
 		};
 	end
 	if ops == SPLIT_BRAMBLE then
@@ -556,12 +573,6 @@ function IsStandardClimate()
 	return cfg ~= nil and cfg.kind == "snow";
 end
 ------------------------------------------------------------------------------
--- Standard only, not Standard-Diagonal (same kind, but tilted).
-function IsPlainStandardClimate()
-	local cfg = GetBarrierConfig();
-	return cfg ~= nil and cfg.kind == "snow" and cfg.tilted ~= true;
-end
-------------------------------------------------------------------------------
 function IsOasisClimate()
 	local cfg = GetBarrierConfig();
 	return cfg ~= nil and cfg.kind == "desert";
@@ -601,6 +612,29 @@ function OasisNonDesertLandAdj(x, y)
 		d = d + 1;
 	end
 	return n
+end
+------------------------------------------------------------------------------
+-- Oasis check: luxuries on a non-desert tile with fewer than 2 non-desert
+-- neighbours, the stray patches tryTerraformOnPlot no longer makes. Any left
+-- come from another source.
+function LogOasisLoneLuxuries()
+	if IsOasisClimate() == false then
+		return
+	end
+	local iW, iH = Map.GetGridSize();
+	local n = 0;
+	for y = 0, iH - 1 do
+		for x = 0, iW - 1 do
+			local plot = Map.GetPlot(x, y);
+			if MirrorOwnsPlot(x, y, DEF_MIRRORED == 1, iW) and plot:IsWater() == false
+				and plot:GetTerrainType() ~= TerrainTypes.TERRAIN_DESERT
+				and IsWeeveeLuxuryID(plot:GetResourceType(-1))
+				and OasisNonDesertLandAdj(x, y) < 2 then
+				n = n + 1;
+			end
+		end
+	end
+	print("Oasis lone luxury tiles:", n);
 end
 ------------------------------------------------------------------------------
 function OasisLuxuryWithin(x, y, maxD)
@@ -2332,6 +2366,30 @@ end
 ------------------------------------------------------------------------------
 local MIN_START_LANDMASS = 6;
 local START_EDGE_MIN = 4;
+-- Flat desert tiles in rings 1-2 of a tile, over the climate's cfg.capitalDesertMax.
+-- Oasis and flood plains don't count. 0 on climates without the limit.
+function CapitalDesertExcess(x, y)
+	local cfg = GetBarrierConfig();
+	if cfg == nil or cfg.capitalDesertMax == nil then
+		return 0, {}
+	end
+	local tiles = {};
+	for yy = y - 2, y + 2 do
+		for xx = x - 2, x + 2 do
+			local d = Map.PlotDistance(x, y, xx, yy);
+			local plot = Map.GetPlot(xx, yy);
+			if plot ~= nil and d >= 1 and d <= 2
+				and plot:GetTerrainType() == TerrainTypes.TERRAIN_DESERT
+				and plot:GetPlotType() == PlotTypes.PLOT_LAND
+				and plot:GetFeatureType() ~= FeatureTypes.FEATURE_OASIS
+				and plot:GetFeatureType() ~= FeatureTypes.FEATURE_FLOOD_PLAINS then
+				table.insert(tiles, plot);
+			end
+		end
+	end
+	return math.max(#tiles - cfg.capitalDesertMax, 0), tiles
+end
+------------------------------------------------------------------------------
 function StartYAllowed(y, iH)
 	if y == nil or iH == nil then
 		return false
@@ -2483,10 +2541,18 @@ function FindNearestStartOffEdge(sx, sy, others, minSep)
 	local x0 = 0;
 	local x1 = iW - 1;
 	if DEF_MIRRORED == 1 then
+		-- A moved start keeps the same distance from the back edge as the start
+		-- regions do (DEF_BACK). Bramble's starts follow its own shape instead.
+		local backDist = DEF_BACK - 1;
+		if IsBramble() then
+			backDist = 0;
+		end
 		if sx < mid then
+			x0 = backDist;
 			x1 = mid - 1;
 		else
 			x0 = mid;
+			x1 = iW - 1 - backDist;
 		end
 	end
 	local cfg = GetBarrierConfig();
@@ -2518,6 +2584,9 @@ function FindNearestStartOffEdge(sx, sy, others, minSep)
 						ok = false;
 					end
 					if ok and SaltWaterWithin(x, y, START_MIN_SALT_WATER_DIST) then
+						ok = false;
+					end
+					if ok and CapitalDesertExcess(x, y) > 0 then
 						ok = false;
 					end
 					if ok then
@@ -2591,6 +2660,9 @@ function OasisSpreadStarts(asp)
 end
 ------------------------------------------------------------------------------
 local weeveeStartDistFail = false;
+local weeveeStartDesertFail = false;
+local weeveeLastAttempt = false;
+local weeveeFrontGapFail = false;
 function EnforceMinStartDistance(asp, minDist)
 	if minDist == nil then
 		minDist = 7;
@@ -2798,6 +2870,9 @@ function AssignStartingPlots:EvaluateCandidatePlot(plotIndex, region_type)
 			return -200, false;
 		end
 		if TongueStartTooClose(x, y) then
+			return -200, false;
+		end
+		if CapitalDesertExcess(x, y) > 0 then
 			return -200, false;
 		end
 	end
@@ -3479,6 +3554,9 @@ function PlaceOasisCrescentSeas(plotTypes, iW, iH)
 	print("Oasis crescent seas: bodies=", nOk, "/", nBodies, " tiles=", nPaint);
 end
 ------------------------------------------------------------------------------
+-- Land tiles kept between water and the center barrier, the tundra column included.
+-- Standard-Diagonal has its own, larger distance in WaterAllowedAtXY.
+local WATER_MIN_FRONT_DIST = 6;
 function WaterAllowedAtX(x)
 	local iW = Map.GetGridSize();
 	local wrapN, centerN = ResolveSnowWrapWidths();
@@ -3500,7 +3578,7 @@ function WaterAllowedAtX(x)
 		end
 	end
 	if centerHalf > 0 and IsTiltedMirrorAxis() == false then
-		if x >= (mid - centerHalf - 4) and x <= (mid + centerHalf - 1 + 4) then
+		if x >= (mid - centerHalf - WATER_MIN_FRONT_DIST) and x <= (mid + centerHalf - 1 + WATER_MIN_FRONT_DIST) then
 			return false
 		end
 	end
@@ -3818,16 +3896,12 @@ function GetSnowWrapTundraColumns(iW, y)
 		-- at all between "econ zone" and "dead barrier zone" -- confirmed
 		-- by an actual regression when this was dropped for every climate
 		-- in an earlier pass (Peaky/Oasis both lost their separator
-		-- entirely). Standard and Frosty are genuine exceptions, not part
-		-- of that same pattern: their contrast already comes from the
-		-- barrier's own terrain kind reading as visibly different from
-		-- their econ zone on its own (Snow vs. never-Snow for Standard; a
-		-- solid Tundra corner nowhere near the econ zone's own tundra --
-		-- which sits well back at the polar corner, not against the
-		-- barrier -- for Frosty), so the extra marker column is only
-		-- omitted for those two.
+		-- entirely). Standard and Standard-Diagonal have it too, as in 10.5.
+		-- Frosty is the exception: its barrier terrain already contrasts with
+		-- the econ zone next to it. Without a row, a diagonal climate has no
+		-- fold position to put the column at, so it's left out of that list.
 		local cfg = GetBarrierConfig();
-		local skipWestColumn = cfg ~= nil and (cfg.kind == "snow" or cfg.kind == "frosty");
+		local skipWestColumn = cfg ~= nil and (cfg.kind == "frosty" or (cfg.tilted == true and y == nil));
 		local half = centerN / 2;
 		if skipWestColumn == false then
 			table.insert(cols, mid - half - 1);
@@ -3970,36 +4044,26 @@ function GetFrontMountainColumns5West(iW)
 	local mid = math.floor(iW / 2);
 	return mid - half - 1, mid - half - 2, mid - half - 3, mid - half - 4, mid - half - 5;
 end
-function GetFrontMountainColumnsWest(iW)
-	local col1, col2, col3 = GetFrontMountainColumns5West(iW);
-	return col1, col2, col3;
-end
 ------------------------------------------------------------------------------
 -- Same five positions, but as offsets from TiltedFoldMid(y) instead of a
 -- fixed column, for climates whose barrier runs along the diagonal fold
--- (Standard-Diagonal). Pass these to PlaceFrontMountainField with
--- tilted=true.
+-- (Standard-Diagonal). Pass these with tilted=true.
 function GetFrontMountainOffsets5West()
 	local wrapN, centerN = ResolveSnowWrapWidths();
 	local half = centerN / 2;
 	return -(half + 1), -(half + 2), -(half + 3), -(half + 4), -(half + 5);
 end
-function GetFrontMountainOffsetsWest()
-	local off1, off2, off3 = GetFrontMountainOffsets5West();
-	return off1, off2, off3;
-end
 ------------------------------------------------------------------------------
--- Demotes every mountain in the front's 3-column zone (col1/col2/col3, or
--- their tilted fold offsets) back to hills, on both the given tile and its
+-- Demotes every mountain in the given columns (or tilted fold offsets) back to
+-- hills, on both the given tile and its
 -- 180-rotation mirror -- ApplyTectonics itself is not mirror-symmetric, so
 -- both sides need clearing explicitly. Used to strip whatever the normal
 -- terrain pass seeded there before PlaceFrontMountainField builds on top
--- of a clean slate (see DISABLE_FRONT_MOUNTAIN_RIDGES for isolating this).
-function PurgeFrontMountainColumns(plotTypes, iW, iH, col1, col2, col3, tilted)
-	local cols = {col1, col2, col3};
+-- of a clean slate.
+function PurgeFrontMountainColumns(plotTypes, iW, iH, cols, tilted)
 	for y = 1, iH - 2 do
 		local ci = 1;
-		while ci <= 3 do
+		while ci <= #cols do
 			local x = cols[ci];
 			if tilted then
 				x = TiltedFoldMid(y) + cols[ci];
@@ -4020,28 +4084,24 @@ function PurgeFrontMountainColumns(plotTypes, iW, iH, col1, col2, col3, tilted)
 	end
 end
 ------------------------------------------------------------------------------
--- Ground-up front mountain field, used by every non-WIP climate's front
--- (Standard, Standard-Diagonal, Murky, Oasis, Peaky -- Frosty/Slate/
--- Wasteland stay on the old chaotic-ridge/fallback systems). Rules, in
--- priority order:
---   1. Mountains are placed across all 5 front columns (col1-col5).
+-- Ground-up front mountain field. Rules, in priority order:
+--   1. Mountains are placed only in the given columns.
 --   2. Exactly one deliberate "opening" -- a run of 4-6 consecutive rows
---      with zero mountains across all 5 columns -- guarantees a real pass
+--      with zero mountains across those columns -- guarantees a real pass
 --      through the front.
 --   3. Outside that opening, no run of 7+ consecutive rows is ever left
 --      without a mountain (a random 1-6 row threshold, re-rolled after each
 --      forced mountain, keeps the spacing irregular but always <= 6).
 --   4. Whatever budget is left after satisfying 2/3 is scattered at random
 --      rows/columns (never inside the opening) for a high-noise field.
--- col1-col5 are absolute columns, unless tilted=true, in which case they're
+-- cols are absolute columns, unless tilted=true, in which case they're
 -- offsets from TiltedFoldMid(y) (see GetFrontMountainOffsets5West) and get
 -- re-resolved to an absolute x every row, so the field tracks the diagonal
 -- barrier instead of cutting straight through it.
-function PlaceFrontMountainField(plotTypes, iW, iH, col1, col2, col3, col4, col5, budget, clumpCap, tilted)
+function PlaceFrontMountainField(plotTypes, iW, iH, cols, budget, clumpCap, tilted)
 	if budget < 1 then
 		return
 	end
-	local cols = {col1, col2, col3, col4, col5};
 	local yLo, yHi = 1, iH - 2;
 	local span = yHi - yLo + 1;
 	if span < 1 then
@@ -4063,13 +4123,13 @@ function PlaceFrontMountainField(plotTypes, iW, iH, col1, col2, col3, col4, col5
 		return col;
 	end
 
-	-- Tries the 5 columns at row y in random order (falling through on a
+	-- Tries the columns at row y in random order (falling through on a
 	-- clump-cap rejection) and places on the first that succeeds.
 	local function tryPlaceAt(y)
-		local order = GetShuffledCopyOfTable({1, 2, 3, 4, 5});
+		local order = GetShuffledCopyOfTable(cols);
 		local k = 1;
-		while k <= 5 do
-			local x = resolveX(cols[order[k]], y);
+		while k <= #order do
+			local x = resolveX(order[k], y);
 			if PlaceMirroredMountainCapped(plotTypes, iW, iH, x, y, clumpCap) then
 				return true;
 			end
@@ -4125,6 +4185,154 @@ function PlaceFrontMountainField(plotTypes, iW, iH, col1, col2, col3, col4, col5
 		end
 		ri = ri + 1;
 	end
+end
+------------------------------------------------------------------------------
+-- Rare variety for the "line" front, each rolled per map: 1-2 mountains on the
+-- tundra column, and a 3-4 mountain chunk in the line or the columns behind it.
+-- Both stay out of the opening the field just kept free.
+local FRONT_FRINGE_CHANCE = 10;
+function PlaceFrontFringeMountains(plotTypes, iW, iH, cols, tilted)
+	local zone = frontMountainZones[#frontMountainZones];
+	local function foldAt(y)
+		if tilted then
+			return TiltedFoldMid(y);
+		end
+		return 0;
+	end
+	local function rowOk(y)
+		return y >= 1 and y <= iH - 2 and (y < zone.openStart or y > zone.openEnd);
+	end
+	local function place(x, y)
+		return x >= 0 and x < iW and plotTypes[y * iW + x + 1] ~= PlotTypes.PLOT_OCEAN
+			and PlaceMirroredMountainCapped(plotTypes, iW, iH, x, y, FRONT_MOUNTAIN_CLUMP_CAP);
+	end
+	local rows = {};
+	for y = 1, iH - 2 do
+		if rowOk(y) then
+			table.insert(rows, y);
+		end
+	end
+	local nTundra, nChunk = 0, 0;
+	if Map.Rand(100, "Front Fringe Tundra") < FRONT_FRINGE_CHANCE then
+		local want = 1 + Map.Rand(2, "Front Fringe Tundra Count");
+		for _, y in ipairs(GetShuffledCopyOfTable(rows)) do
+			if nTundra < want and place(foldAt(y) + cols[1], y) then
+				nTundra = nTundra + 1;
+			end
+		end
+	end
+	if Map.Rand(100, "Front Fringe Chunk") < FRONT_FRINGE_CHANCE then
+		local want = 3 + Map.Rand(2, "Front Fringe Chunk Size");
+		local chunk = {};
+		for _, y in ipairs(GetShuffledCopyOfTable(rows)) do
+			local x = foldAt(y) + cols[2 + Map.Rand(4, "Front Fringe Chunk Column")];
+			if #chunk == 0 and place(x, y) then
+				chunk[1] = {x, y};
+			end
+		end
+		local tries = 0;
+		while #chunk > 0 and #chunk < want and tries < 40 do
+			tries = tries + 1;
+			local base = chunk[1 + Map.Rand(#chunk, "Front Fringe Chunk Base")];
+			local dir = HexDirsForY(base[2])[1 + Map.Rand(6, "Front Fringe Chunk Dir")];
+			local nx, ny = base[1] + dir[1], base[2] + dir[2];
+			if rowOk(ny) then
+				local off = nx - foldAt(ny);
+				if off <= cols[2] and off >= cols[5] and place(nx, ny) then
+					table.insert(chunk, {nx, ny});
+				end
+			end
+		end
+		nChunk = #chunk;
+	end
+	print("Front fringe mountains: tundra column", nTundra, "chunk", nChunk);
+	mountainRoll.fringeTundra, mountainRoll.fringeChunk = nTundra, nChunk;
+end
+------------------------------------------------------------------------------
+-- The climate's front mountains, from cfg.frontMountains:
+--   "line":  one column (the one 10.5 used, iW/2 - 4). As in 10.5 only that
+--            column and the one before the barrier are cleared, so tectonics
+--            leaves irregular mountain groups in the columns behind it.
+--   "field": five columns, with tectonics left in the outer two by design.
+--   "ridge": the older chaotic ridge.
+--   nil:     the climate places its own.
+function PlaceClimateFrontMountains(plotTypes, iW, iH, cfg)
+	if cfg.frontMountains == "ridge" then
+		PlaceChaoticFrontRidge(plotTypes, iW, iH, iW / 2 - 4, FRONT_MOUNTAIN_DENSITY);
+	elseif cfg.frontMountains ~= nil then
+		local tilted = (cfg.tilted == true);
+		local cols;
+		if tilted then
+			cols = {GetFrontMountainOffsets5West()};
+		else
+			cols = {GetFrontMountainColumns5West(iW)};
+		end
+		if cfg.frontMountains == "line" then
+			PurgeFrontMountainColumns(plotTypes, iW, iH, {cols[1], cols[2]}, tilted);
+			local share = FRONT_MOUNTAIN_LINE_SHARES[1 + Map.Rand(#FRONT_MOUNTAIN_LINE_SHARES, "Front Line Share")];
+			mountainRoll.lineBudget = math.floor(iH * share);
+			PlaceFrontMountainField(plotTypes, iW, iH, {cols[2]}, mountainRoll.lineBudget, FRONT_MOUNTAIN_CLUMP_CAP, tilted);
+			PlaceFrontFringeMountains(plotTypes, iW, iH, cols, tilted);
+		else
+			PurgeFrontMountainColumns(plotTypes, iW, iH, {cols[1], cols[2], cols[3]}, tilted);
+			PlaceFrontMountainField(plotTypes, iW, iH, cols, FRONT_MOUNTAIN_BUDGET, FRONT_MOUNTAIN_CLUMP_CAP, tilted);
+		end
+	end
+end
+------------------------------------------------------------------------------
+-- Check: one line per map with the random decisions behind its mountains and where
+-- they ended up on the west side, by column counted from the barrier, so a roll that
+-- looks wrong can be matched to its cause. In Lua.log and weevee_persist.log.
+function LogMountainRoll()
+	local cfg = GetBarrierConfig();
+	if cfg == nil or cfg.frontMountains == nil then
+		return
+	end
+	local iW, iH = Map.GetGridSize();
+	local _, centerN = ResolveSnowWrapWidths();
+	local half = centerN / 2;
+	local inSnow, byColumn, elsewhere = 0, {}, 0;
+	for i = 1, 7 do
+		byColumn[i] = 0;
+	end
+	for y = 0, iH - 1 do
+		local fold = math.floor(iW / 2);
+		if cfg.tilted == true then
+			fold = TiltedFoldMid(y);
+		end
+		for x = 0, iW - 1 do
+			if MirrorSourcePlot(x, y) and Map.GetPlot(x, y):IsMountain() then
+				local fromBarrier = fold - half - x; -- 1 = tundra column, 2 = front line
+				if fromBarrier <= 0 then
+					inSnow = inSnow + 1;
+				elseif fromBarrier <= 7 then
+					byColumn[fromBarrier] = byColumn[fromBarrier] + 1;
+				else
+					elsewhere = elsewhere + 1;
+				end
+			end
+		end
+	end
+	local total = inSnow + elsewhere;
+	for i = 1, 7 do
+		total = total + byColumn[i];
+	end
+	local r = mountainRoll;
+	local zone = frontMountainZones[#frontMountainZones];
+	local function list(t)
+		return t ~= nil and #t > 0 and table.concat(t, " ") or "none";
+	end
+	local line = "Mountain roll: line budget " .. tostring(r.lineBudget)
+		.. " opening rows " .. (zone ~= nil and (zone.openStart .. "-" .. zone.openEnd) or "none")
+		.. " | fringe tundra " .. tostring(r.fringeTundra) .. " chunk " .. tostring(r.fringeChunk)
+		.. " | snow groups " .. list(r.snowGroups) .. " finger hills " .. tostring(r.snowFingerHills) .. " lone hills " .. tostring(r.snowLoneHills)
+		.. " | contact wanted " .. tostring(r.contactWant) .. " budget " .. tostring(r.contactBudget) .. " groups " .. list(r.contactGroups) .. " = " .. tostring(r.contactMountains) .. " hills " .. tostring(r.contactHills)
+		.. " | cleared line " .. tostring(r.lineCleared) .. " behind " .. tostring(r.behindCleared) .. " radius " .. tostring(r.clearRadius)
+		.. " | final: snow " .. inSnow .. " tundra " .. byColumn[1] .. " line " .. byColumn[2]
+		.. " behind " .. byColumn[3] .. " " .. byColumn[4] .. " " .. byColumn[5] .. " " .. byColumn[6] .. " " .. byColumn[7]
+		.. " elsewhere " .. elsewhere .. " total " .. total .. " wall " .. (byColumn[1] + byColumn[2]);
+	print(line);
+	WeeveeDbgPersist(line);
 end
 ------------------------------------------------------------------------------
 -- Live-map (Map.GetPlot, not the plotTypes array) equivalent of
@@ -4183,8 +4391,8 @@ function TryPatchFrontMountainGap(x, y, cap)
 end
 ------------------------------------------------------------------------------
 -- Post-wonder safety net for PlaceFrontMountainField's rule 3 (no 7+ row
--- gap with zero mountains). Natural Wonders can land in columns 4-5 (the
--- two columns deliberately left un-purged, contaminated by tectonics) after
+-- gap with zero mountains). Natural Wonders can land in the outer columns
+-- (deliberately left un-purged, contaminated by tectonics) after
 -- generation already committed to a mountain layout -- they're never
 -- touched or demoted, but they DO count as an obstacle here, the same as a
 -- mountain would, since most Natural Wonders are impassable. Must run after
@@ -4201,10 +4409,10 @@ function AuditFrontMountainGaps()
 		local y = yLo;
 		while y <= yHi + 1 do
 			local inOpening = (y >= zone.openStart and y <= zone.openEnd);
-			local occupied = false;
+			local occupied = (zone.clearedRows ~= nil and zone.clearedRows[y] == true);
 			if y <= yHi and not inOpening then
 				local ci = 1;
-				while ci <= 5 do
+				while ci <= #cols do
 					local x = cols[ci];
 					if zone.tilted then
 						x = TiltedFoldMid(y) + cols[ci];
@@ -4214,7 +4422,7 @@ function AuditFrontMountainGaps()
 						if plot ~= nil then
 							if plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
 								occupied = true;
-							elseif (ci == 4 or ci == 5) and PlotHasNaturalWonder(plot) then
+							elseif (ci >= 4 or #cols == 1) and PlotHasNaturalWonder(plot) then
 								occupied = true;
 							end
 						end
@@ -4235,12 +4443,13 @@ function AuditFrontMountainGaps()
 							while ti <= 2 and patched == false do
 								local py = tries[ti];
 								if py >= gapStart and py <= gapEnd then
-									local order = GetShuffledCopyOfTable({1, 2, 3});
+									local inner = {cols[1], cols[2], cols[3]}; -- the purged columns; a single-column list stops after cols[1]
+									local order = GetShuffledCopyOfTable(inner);
 									local ci2 = 1;
-									while ci2 <= 3 and patched == false do
-										local x = cols[order[ci2]];
+									while ci2 <= #order and patched == false do
+										local x = order[ci2];
 										if zone.tilted then
-											x = TiltedFoldMid(py) + cols[order[ci2]];
+											x = TiltedFoldMid(py) + order[ci2];
 										end
 										patched = TryPatchFrontMountainGap(x, py, FRONT_MOUNTAIN_CLUMP_CAP);
 										ci2 = ci2 + 1;
@@ -6250,19 +6459,15 @@ end
 function CapSeaResources()
 	local cap = 15;
 	local iW, iH = Map.GetGridSize();
-	local maxX = iW;
-	if DEF_MIRRORED == 1 then
-		maxX = iW * 0.5;
-	end
 	local fishID = GameInfoTypes["RESOURCE_FISH"];
 	local fishPlots = {};
 	local otherPlots = {};
 	local y = 0;
 	while y < iH do
 		local x = 0;
-		while x <= maxX do
+		while x < iW do
 			local plot = Map.GetPlot(x, y);
-			if plot ~= nil and plot:IsWater() then
+			if plot ~= nil and plot:IsWater() and MirrorSourcePlot(x, y) then
 				local res = plot:GetResourceType(-1);
 				if IsCappedSeaResource(res) then
 					if res == fishID then
@@ -6338,17 +6543,13 @@ function EnsureSeaResourceMinimum()
 		WeeveeDbgPersist("SEA RES peaks floor target=" .. minWant);
 	end
 	local iW, iH = Map.GetGridSize();
-	local maxX = iW;
-	if DEF_MIRRORED == 1 then
-		maxX = iW * 0.5;
-	end
 	local existing = {};
 	local y = 0;
 	while y < iH do
 		local x = 0;
-		while x <= maxX do
+		while x < iW do
 			local plot = Map.GetPlot(x, y);
-			if plot ~= nil and plot:IsWater() and IsCappedSeaResource(plot:GetResourceType(-1)) then
+			if plot ~= nil and plot:IsWater() and MirrorSourcePlot(x, y) and IsCappedSeaResource(plot:GetResourceType(-1)) then
 				table.insert(existing, plot);
 			end
 			x = x + 1;
@@ -6388,8 +6589,8 @@ function EnsureSeaResourceMinimum()
 		while y < iH do
 			local skip = RowMireSkip(iW, y);
 			local x = 0;
-			while x <= maxX do
-				if skip[x] ~= true then
+			while x < iW do
+				if skip[x] ~= true and MirrorSourcePlot(x, y) then
 					local plot = Map.GetPlot(x, y);
 					if plot ~= nil
 						and plot:IsWater()
@@ -6448,10 +6649,15 @@ function StripIllegalWaterResources()
 					if res ~= -1 and IsCappedSeaResource(res) == false and res ~= oilID then
 						local amt = plot:GetNumResource();
 						plot:SetResourceType(-1);
-						if plot:CanHaveResource(res, true) then
+						-- CanHaveResource only looks at terrain, so a water tile painted
+						-- with land terrain would pass it for a land resource.
+						local t = plot:GetTerrainType();
+						local waterTerrain = (t == TerrainTypes.TERRAIN_COAST or t == TerrainTypes.TERRAIN_OCEAN);
+						if waterTerrain and plot:CanHaveResource(res, true) then
 							plot:SetResourceType(res, amt);
 						else
 							n = n + 1;
+							WeeveeDbgPersist("Illegal water resource removed: res " .. res .. " at " .. x .. "," .. y .. " terrain " .. t);
 							WeeveeDbgPersist("StripIllegalWaterResources: removed res=" .. tostring(res) .. " at " .. x .. "," .. y .. " lake=" .. tostring(plot:IsLake()));
 						end
 					end
@@ -6462,6 +6668,129 @@ function StripIllegalWaterResources()
 		y = y + 1;
 	end
 	print("Illegal water resources stripped:", n);
+end
+------------------------------------------------------------------------------
+-- Check: lakes with a river on one of their edges, which shouldn't exist. Called
+-- at several stages, so the first stage a tile shows up at names the step that
+-- made it. Before the mirror it looks at the west side only.
+function LogLakesWithRiverEdges(stage, wholeMap)
+	local iW, iH = Map.GetGridSize();
+	local D = DirectionTypes;
+	local n = 0;
+	for y = 0, iH - 1 do
+		for x = 0, iW - 1 do
+			local plot = Map.GetPlot(x, y);
+			if plot:IsWater() and plot:IsLake() and (wholeMap or MirrorOwnsPlot(x, y, DEF_MIRRORED == 1, iW)) then
+				local w = PlotDirNoXWrap(x, y, D.DIRECTION_WEST);
+				local nw = PlotDirNoXWrap(x, y, D.DIRECTION_NORTHWEST);
+				local ne = PlotDirNoXWrap(x, y, D.DIRECTION_NORTHEAST);
+				local own = (plot:IsWOfRiver() or plot:IsNWOfRiver() or plot:IsNEOfRiver());
+				local other = ((w ~= nil and w:IsWOfRiver()) or (nw ~= nil and nw:IsNWOfRiver()) or (ne ~= nil and ne:IsNEOfRiver()));
+				if own or other then
+					n = n + 1;
+					WeeveeDbgPersist("Lake with river edge [" .. stage .. "]: at " .. x .. "," .. y .. " own edge " .. tostring(own) .. " neighbour edge " .. tostring(other) .. " IsRiver " .. tostring(plot:IsRiver()) .. " res " .. plot:GetResourceType(-1) .. " terrain " .. plot:GetTerrainType());
+				end
+			end
+		end
+	end
+	print("Lakes with river edges [" .. stage .. "]:", n);
+end
+------------------------------------------------------------------------------
+-- After the mirror: the widest run of rows with no mountain from the front line
+-- through the snow. The field keeps an opening on the front line, but the snow's
+-- mountains and their mirror copies can block it, which only shows once both halves
+-- exist. Too narrow rejects the map (cfg.frontGapMin). The east's line mirrors the
+-- west's, so checking one is enough.
+function CheckFrontGap()
+	local cfg = GetBarrierConfig();
+	if cfg == nil or cfg.frontGapMin == nil then
+		return
+	end
+	local iW, iH = Map.GetGridSize();
+	local _, centerN = ResolveSnowWrapWidths();
+	local half = centerN / 2;
+	local widest, run = 0, 0;
+	for y = 1, iH - 2 do
+		local fold = math.floor(iW / 2);
+		if cfg.tilted == true then
+			fold = TiltedFoldMid(y);
+		end
+		local blocked = false;
+		for x = fold - (half + 2), fold + half - 1 do
+			local plot = Map.GetPlot(x, y);
+			if plot ~= nil and plot:IsMountain() then
+				blocked = true;
+			end
+		end
+		if blocked then
+			run = 0;
+		else
+			run = run + 1;
+			widest = math.max(widest, run);
+		end
+	end
+	if widest < cfg.frontGapMin then
+		weeveeFrontGapFail = true;
+	end
+	local line = "Front gap after mirror: widest " .. widest .. " rows, minimum " .. cfg.frontGapMin;
+	print(line);
+	WeeveeDbgPersist(line);
+end
+------------------------------------------------------------------------------
+-- After the mirror: every resource on water that isn't a sea resource or oil, over
+-- the whole map. Should stay empty; a line here names the tile to look at.
+function LogLandResourcesOnWater()
+	local oilID = GameInfoTypes["RESOURCE_OIL"];
+	local iW, iH = Map.GetGridSize();
+	local n = 0;
+	for y = 0, iH - 1 do
+		for x = 0, iW - 1 do
+			local plot = Map.GetPlot(x, y);
+			local res = plot:GetResourceType(-1);
+			if plot:IsWater() and res ~= -1 and IsCappedSeaResource(res) == false and res ~= oilID then
+				n = n + 1;
+				WeeveeDbgPersist("Land resource on water after mirror: res " .. res .. " at " .. x .. "," .. y .. " terrain " .. plot:GetTerrainType() .. " lake " .. tostring(plot:IsLake()));
+			end
+		end
+	end
+	print("Land resources on water after mirror:", n);
+end
+------------------------------------------------------------------------------
+-- Final check of cfg.capitalDesertMax, after everything that can move a start or
+-- change terrain: start selection avoids these spots, but can run out of options.
+-- A failing map is rerolled; on the last attempt the excess tiles turn to plains.
+function CheckCapitalDesert()
+	for pi = 0, GameDefines.MAX_MAJOR_CIVS - 1 do
+		local p = Players[pi];
+		local sp = p ~= nil and p:IsAlive() and p:GetStartingPlot() or nil;
+		if sp and IsMirrorEastSubject(sp:GetX(), sp:GetY()) == false then
+			local excess, tiles = CapitalDesertExcess(sp:GetX(), sp:GetY());
+			if excess > 0 and weeveeLastAttempt then
+				for _, plot in ipairs(GetShuffledCopyOfTable(tiles)) do
+					local res, amt = plot:GetResourceType(-1), plot:GetNumResource();
+					if excess > 0 then
+						plot:SetResourceType(-1);
+						plot:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
+						if res ~= -1 then
+							if plot:CanHaveResource(res) then
+								plot:SetResourceType(res, amt);
+							else
+								plot:SetTerrainType(TerrainTypes.TERRAIN_DESERT, false, false);
+								plot:SetResourceType(res, amt);
+							end
+						end
+						if plot:GetTerrainType() == TerrainTypes.TERRAIN_PLAINS then
+							excess = excess - 1;
+						end
+					end
+				end
+			end
+			if excess > 0 then
+				weeveeStartDesertFail = true;
+				print("Capital desert over the limit: at", sp:GetX(), sp:GetY(), "excess", excess);
+			end
+		end
+	end
 end
 ------------------------------------------------------------------------------
 function ThinOasisCoastalLuxuries()
@@ -6787,150 +7116,10 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 		end
 	end
 	frontMountainZones = {};
+	mountainRoll = {};
 	if IsSnowBarrier() then
 		local cfg = GetBarrierConfig();
-		local mountainDensity = FRONT_MOUNTAIN_DENSITY;
-		if cfg.kind == "peaks" then
-			local col1, col2, col3, col4, col5 = GetFrontMountainColumns5West(iW);
-			PurgeFrontMountainColumns(self.wholeworldPlotTypes, iW, iH, col1, col2, col3);
-			if not DISABLE_FRONT_MOUNTAIN_RIDGES then
-				PlaceFrontMountainField(self.wholeworldPlotTypes, iW, iH, col1, col2, col3, col4, col5, FRONT_MOUNTAIN_BUDGET, FRONT_MOUNTAIN_CLUMP_CAP);
-			end
-			if IsSnowWrapX() then
-				local x_wrap_west = GetSnowWrapLandMountainXs(iW);
-				PurgeFrontMountainColumns(self.wholeworldPlotTypes, iW, iH, x_wrap_west - 1, x_wrap_west, x_wrap_west + 1);
-				if not DISABLE_FRONT_MOUNTAIN_RIDGES then
-					PlaceFrontMountainField(self.wholeworldPlotTypes, iW, iH, x_wrap_west - 2, x_wrap_west - 1, x_wrap_west, x_wrap_west + 1, x_wrap_west + 2, FRONT_MOUNTAIN_BUDGET, FRONT_MOUNTAIN_CLUMP_CAP);
-				end
-			end
-		elseif cfg.kind == "snow" and cfg.tilted ~= true then
-			-- One column instead of five, so the front doesn't read as several
-			-- layers of mountains: col2 is the column 10.5 used (iW/2 - 4). All
-			-- five are purged, so tectonics leaves no layer behind it either.
-			local col1, col2, col3, col4, col5 = GetFrontMountainColumns5West(iW);
-			PurgeFrontMountainColumns(self.wholeworldPlotTypes, iW, iH, col1, col2, col3);
-			PurgeFrontMountainColumns(self.wholeworldPlotTypes, iW, iH, col3, col4, col5);
-			if not DISABLE_FRONT_MOUNTAIN_RIDGES then
-				PlaceFrontMountainField(self.wholeworldPlotTypes, iW, iH, col2, col2, col2, col2, col2, math.floor(iH * FRONT_MOUNTAIN_STANDARD_SHARE), FRONT_MOUNTAIN_CLUMP_CAP);
-			end
-			if IsSnowWrapX() then
-				local x_wrap_west = GetSnowWrapLandMountainXs(iW);
-				PurgeFrontMountainColumns(self.wholeworldPlotTypes, iW, iH, x_wrap_west - 1, x_wrap_west, x_wrap_west + 1);
-				if not DISABLE_FRONT_MOUNTAIN_RIDGES then
-					PlaceFrontMountainField(self.wholeworldPlotTypes, iW, iH, x_wrap_west - 2, x_wrap_west - 1, x_wrap_west, x_wrap_west + 1, x_wrap_west + 2, FRONT_MOUNTAIN_BUDGET, FRONT_MOUNTAIN_CLUMP_CAP);
-				end
-			end
-		elseif cfg.kind == "snow" and cfg.tilted == true then
-			-- Standard-Diagonal: same field design, but the five columns are
-			-- offsets from the row-local fold instead of fixed columns, so
-			-- the field tracks the diagonal barrier.
-			local off1, off2, off3, off4, off5 = GetFrontMountainOffsets5West();
-			PurgeFrontMountainColumns(self.wholeworldPlotTypes, iW, iH, off1, off2, off3, true);
-			if not DISABLE_FRONT_MOUNTAIN_RIDGES then
-				PlaceFrontMountainField(self.wholeworldPlotTypes, iW, iH, off1, off2, off3, off4, off5, FRONT_MOUNTAIN_BUDGET_DIAGONAL, FRONT_MOUNTAIN_CLUMP_CAP, true);
-			end
-			if IsSnowWrapX() then
-				-- The wrap seam sits at the map edges, not on the tilted
-				-- fold, so it uses fixed columns like Standard's does.
-				local x_wrap_west = GetSnowWrapLandMountainXs(iW);
-				PurgeFrontMountainColumns(self.wholeworldPlotTypes, iW, iH, x_wrap_west - 1, x_wrap_west, x_wrap_west + 1);
-				if not DISABLE_FRONT_MOUNTAIN_RIDGES then
-					PlaceFrontMountainField(self.wholeworldPlotTypes, iW, iH, x_wrap_west - 2, x_wrap_west - 1, x_wrap_west, x_wrap_west + 1, x_wrap_west + 2, FRONT_MOUNTAIN_BUDGET_DIAGONAL, FRONT_MOUNTAIN_CLUMP_CAP);
-				end
-			end
-		elseif cfg.kind == "wetland" then
-			local col1, col2, col3, col4, col5 = GetFrontMountainColumns5West(iW);
-			PurgeFrontMountainColumns(self.wholeworldPlotTypes, iW, iH, col1, col2, col3);
-			if not DISABLE_FRONT_MOUNTAIN_RIDGES then
-				PlaceFrontMountainField(self.wholeworldPlotTypes, iW, iH, col1, col2, col3, col4, col5, FRONT_MOUNTAIN_BUDGET, FRONT_MOUNTAIN_CLUMP_CAP);
-			end
-			if IsSnowWrapX() then
-				local x_wrap_west = GetSnowWrapLandMountainXs(iW);
-				PurgeFrontMountainColumns(self.wholeworldPlotTypes, iW, iH, x_wrap_west - 1, x_wrap_west, x_wrap_west + 1);
-				if not DISABLE_FRONT_MOUNTAIN_RIDGES then
-					PlaceFrontMountainField(self.wholeworldPlotTypes, iW, iH, x_wrap_west - 2, x_wrap_west - 1, x_wrap_west, x_wrap_west + 1, x_wrap_west + 2, FRONT_MOUNTAIN_BUDGET, FRONT_MOUNTAIN_CLUMP_CAP);
-				end
-			end
-		elseif cfg.kind == "desert" then
-			local col1, col2, col3, col4, col5 = GetFrontMountainColumns5West(iW);
-			PurgeFrontMountainColumns(self.wholeworldPlotTypes, iW, iH, col1, col2, col3);
-			if not DISABLE_FRONT_MOUNTAIN_RIDGES then
-				PlaceFrontMountainField(self.wholeworldPlotTypes, iW, iH, col1, col2, col3, col4, col5, FRONT_MOUNTAIN_BUDGET, FRONT_MOUNTAIN_CLUMP_CAP);
-			end
-			if IsSnowWrapX() then
-				local x_wrap_west = GetSnowWrapLandMountainXs(iW);
-				PurgeFrontMountainColumns(self.wholeworldPlotTypes, iW, iH, x_wrap_west - 1, x_wrap_west, x_wrap_west + 1);
-				if not DISABLE_FRONT_MOUNTAIN_RIDGES then
-					PlaceFrontMountainField(self.wholeworldPlotTypes, iW, iH, x_wrap_west - 2, x_wrap_west - 1, x_wrap_west, x_wrap_west + 1, x_wrap_west + 2, FRONT_MOUNTAIN_BUDGET, FRONT_MOUNTAIN_CLUMP_CAP);
-				end
-			end
-		elseif cfg.kind == "frosty" then
-			-- Same column-weighted ridge design as Standard/Wetland/Oasis,
-			-- not the older generic chaotic ridge -- part of the climate's
-			-- from-scratch redesign.
-			local col1, col2, col3, col4, col5 = GetFrontMountainColumns5West(iW);
-			PurgeFrontMountainColumns(self.wholeworldPlotTypes, iW, iH, col1, col2, col3);
-			if not DISABLE_FRONT_MOUNTAIN_RIDGES then
-				PlaceFrontMountainField(self.wholeworldPlotTypes, iW, iH, col1, col2, col3, col4, col5, FRONT_MOUNTAIN_BUDGET, FRONT_MOUNTAIN_CLUMP_CAP);
-			end
-			if IsSnowWrapX() then
-				local x_wrap_west = GetSnowWrapLandMountainXs(iW);
-				PurgeFrontMountainColumns(self.wholeworldPlotTypes, iW, iH, x_wrap_west - 1, x_wrap_west, x_wrap_west + 1);
-				if not DISABLE_FRONT_MOUNTAIN_RIDGES then
-					PlaceFrontMountainField(self.wholeworldPlotTypes, iW, iH, x_wrap_west - 2, x_wrap_west - 1, x_wrap_west, x_wrap_west + 1, x_wrap_west + 2, FRONT_MOUNTAIN_BUDGET, FRONT_MOUNTAIN_CLUMP_CAP);
-				end
-			end
-		elseif cfg.chaoticMountains then
-			if cfg.kind ~= "tongue" and cfg.kind ~= "bramble" then
-				PlaceChaoticFrontRidge(self.wholeworldPlotTypes, iW, iH, iW / 2 - 4, mountainDensity);
-			end
-			if IsSnowWrapX() then
-				local x_wrap_west = GetSnowWrapLandMountainXs(iW);
-				PlaceChaoticFrontRidge(self.wholeworldPlotTypes, iW, iH, x_wrap_west, mountainDensity);
-			end
-		else
-			local west_half = {};
-			for loop = 1, iH - 2 do
-				table.insert(west_half, loop);
-			end
-			local iNumMountainsPerColumn = math.floor(iH * mountainDensity);
-
-			local front_shuffled = GetShuffledCopyOfTable(west_half)
-			local x_west, x_east = iW / 2 - 4, iW / 2 + 3;
-			for loop = 1, iNumMountainsPerColumn do
-				local y_west, y_east = front_shuffled[loop], iH - 1 - front_shuffled[loop];
-				local px_west, px_east = x_west, x_east;
-				if IsTiltedMirrorAxis() then
-					-- Follow the fold at each mountain's own row instead of a
-					-- fixed column, so the "front" ridge tracks the diagonal
-					-- barrier instead of cutting straight through it. Vary the
-					-- gap to the barrier's edge (0-2 tiles, same roll on both
-					-- mirrored sides) instead of always sitting exactly 1 tile
-					-- off it.
-					local gap = Map.Rand(3, "Front Mountain Gap");
-					local _, gapCenterN = ResolveSnowWrapWidths();
-					local gapHalf = gapCenterN / 2;
-					px_west = TiltedFoldMid(y_west) - (gapHalf + 1 + gap);
-					px_east = TiltedFoldMid(y_east) + (gapHalf + gap);
-				end
-				if px_west >= 0 and px_west < iW then
-					self.wholeworldPlotTypes[y_west * iW + px_west + 1] = PlotTypes.PLOT_MOUNTAIN;
-				end
-				if px_east >= 0 and px_east < iW then
-					self.wholeworldPlotTypes[y_east * iW + px_east + 1] = PlotTypes.PLOT_MOUNTAIN;
-				end
-			end
-
-			if IsSnowWrapX() then
-				local wrap_shuffled = GetShuffledCopyOfTable(west_half)
-				local x_wrap_west, x_wrap_east = GetSnowWrapLandMountainXs(iW);
-				for loop = 1, iNumMountainsPerColumn do
-					local y_west, y_east = wrap_shuffled[loop], iH - 1 - wrap_shuffled[loop];
-					self.wholeworldPlotTypes[y_west * iW + x_wrap_west + 1] = PlotTypes.PLOT_MOUNTAIN;
-					self.wholeworldPlotTypes[y_east * iW + x_wrap_east + 1] = PlotTypes.PLOT_MOUNTAIN;
-				end
-			end
-		end
+		PlaceClimateFrontMountains(self.wholeworldPlotTypes, iW, iH, cfg);
 
 		-- Interior lakes. At least 3 columns from both snow seams.
 		local minX, maxX = GetSnowWrapWaterBounds(iW);
@@ -7687,6 +7876,7 @@ function AddLakes()
 	elseif IsSnowBarrier() then
 		Map.CalculateAreas();
 	end
+	LogLakesWithRiverEdges("after AddLakes");
 end
 ------------------------------------------------------------------------------
 ------------------------------------------------------------------------------
@@ -8506,7 +8696,7 @@ function EnsureOasisUniqueLuxuries()
 		while p <= #shuf and placed == false do
 			local plot = shuf[p];
 			if plot:GetResourceType(-1) == -1 and OasisLuxuryWithin(plot:GetX(), plot:GetY(), 1) == false then
-				if plot:CanHaveResource(luxID) then
+				if LuxuryLegalAt(plot, luxID) then
 					plot:SetResourceType(luxID, 1);
 					placed = true;
 				elseif mining[luxID] == true and plot:IsWater() == false then
@@ -8519,7 +8709,7 @@ function EnsureOasisUniqueLuxuries()
 						if plot:GetPlotType() == PlotTypes.PLOT_LAND then
 							plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
 						end
-						if plot:CanHaveResource(luxID) then
+						if LuxuryLegalAt(plot, luxID) then
 							plot:SetResourceType(luxID, 1);
 							placed = true;
 						end
@@ -8530,7 +8720,7 @@ function EnsureOasisUniqueLuxuries()
 					if ter == TerrainTypes.TERRAIN_DESERT and feat == FeatureTypes.NO_FEATURE then
 						if OasisNonDesertLandAdj(plot:GetX(), plot:GetY()) >= 2 then
 							plot:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
-							if plot:CanHaveResource(luxID) then
+							if LuxuryLegalAt(plot, luxID) then
 								plot:SetResourceType(luxID, 1);
 								placed = true;
 							else
@@ -8561,7 +8751,7 @@ function EnsureOasisUniqueLuxuries()
 				mi = 1;
 				while mi <= #miningOrder do
 					local id = miningOrder[mi];
-					if id ~= nil and plot:CanHaveResource(id) then
+					if id ~= nil and LuxuryLegalAt(plot, id) then
 						table.insert(fit, id);
 					end
 					mi = mi + 1;
@@ -8620,6 +8810,94 @@ function IsWeeveeLuxuryID(res)
 	return Game.GetResourceUsageType(res) == ResourceUsageTypes.RESOURCEUSAGE_LUXURY;
 end
 ------------------------------------------------------------------------------
+-- Stock luxury placement never asks CanHaveResource: it takes a luxury's tile types
+-- from GetIndicesForLuxuryType, so with the Weevee mod's data jade lands on hills
+-- although the Resources table says flat only. These two let the forced passes
+-- follow the same lists, so regional and quota luxuries look like 10.5's.
+local weeveeLuxuryAsp = nil;
+-- The stock list numbers a land tile belongs to (see GenerateLuxuryPlotListsAtCitySite).
+function StockLuxuryLists(plot)
+	local ft = plot:GetFeatureType();
+	local t = plot:GetTerrainType();
+	local T, FT = TerrainTypes, FeatureTypes;
+	if plot:GetPlotType() == PlotTypes.PLOT_HILLS then
+		if t == T.TERRAIN_SNOW then
+			return {}
+		elseif ft == FT.NO_FEATURE then
+			return {4}
+		elseif ft == FT.FEATURE_JUNGLE then
+			return {6, 5}
+		elseif ft == FT.FEATURE_FOREST then
+			return {7, 5}
+		end
+	elseif plot:GetPlotType() == PlotTypes.PLOT_LAND then
+		if ft == FT.NO_FEATURE then
+			if t == T.TERRAIN_TUNDRA then
+				return {14}
+			elseif t == T.TERRAIN_DESERT then
+				return {10}
+			elseif t == T.TERRAIN_PLAINS then
+				return {11}
+			elseif t == T.TERRAIN_GRASS then
+				return {12, 13}
+			end
+		elseif ft == FT.FEATURE_MARSH then
+			return {2}
+		elseif ft == FT.FEATURE_FLOOD_PLAINS then
+			return {3}
+		elseif ft == FT.FEATURE_JUNGLE then
+			return {8}
+		elseif ft == FT.FEATURE_FOREST then
+			if t == T.TERRAIN_TUNDRA then
+				return {9, 14}
+			end
+			return {9, 15}
+		end
+	end
+	return {}
+end
+-- Whether a luxury may go on an empty tile: the game's rule, or stock's lists.
+function LuxuryLegalAt(plot, res)
+	if plot:CanHaveResource(res) then
+		return true
+	end
+	if weeveeLuxuryAsp == nil or plot:IsWater() or plot:IsMountain() or plot:GetResourceType(-1) ~= -1 then
+		return false
+	end
+	local p, s, t, q = weeveeLuxuryAsp:GetIndicesForLuxuryType(res);
+	for _, n in ipairs(StockLuxuryLists(plot)) do
+		if n == p or n == s or n == t or n == q then
+			return true
+		end
+	end
+	return false
+end
+-- A shuffled copy with the luxury's first-choice tile type in front.
+function StockOrdered(res, plots)
+	local first, rest = {}, {};
+	local p = -1;
+	if weeveeLuxuryAsp ~= nil then
+		p = weeveeLuxuryAsp:GetIndicesForLuxuryType(res);
+	end
+	for _, plot in ipairs(GetShuffledCopyOfTable(plots)) do
+		local isFirst = false;
+		for _, n in ipairs(StockLuxuryLists(plot)) do
+			if n == p then
+				isFirst = true;
+			end
+		end
+		if isFirst then
+			table.insert(first, plot);
+		else
+			table.insert(rest, plot);
+		end
+	end
+	for _, plot in ipairs(rest) do
+		table.insert(first, plot);
+	end
+	return first
+end
+------------------------------------------------------------------------------
 -- Shared by every late strip/safety-net pass that used to delete a luxury
 -- outright once it landed somewhere no longer legal (barrier column, mountain,
 -- a start tile, ...). Moves the resource to a nearby legal tile instead, so a
@@ -8657,7 +8935,7 @@ function TryRelocateLuxury(plot, isBanned, maxRadius)
 					and cand:IsWater() == wasWater
 					and cand:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN
 					and cand:GetResourceType(-1) == -1
-					and cand:CanHaveResource(res)
+					and LuxuryLegalAt(cand, res)
 					and PlotIsMajorStart(cand) == false
 					and (isBanned == nil or isBanned(x, y) == false) then
 					table.insert(cands, cand);
@@ -8671,7 +8949,7 @@ function TryRelocateLuxury(plot, isBanned, maxRadius)
 		return false
 	end
 	if #cands > 1 then
-		cands = GetShuffledCopyOfTable(cands);
+		cands = StockOrdered(res, cands);
 	end
 	cands[1]:SetResourceType(res, amt);
 	plot:SetResourceType(-1);
@@ -8793,7 +9071,7 @@ function EnsureLuxuryQuota()
 					if plot ~= nil
 						and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN
 						and plot:GetResourceType(-1) == -1
-						and plot:CanHaveResource(luxID)
+						and LuxuryLegalAt(plot, luxID)
 						and luxTooClose(x, y, luxID, anyMin, sameMin) == false then
 						local cfgLux = GetBarrierConfig();
 						if not (cfgLux ~= nil and cfgLux.kind == "frosty" and plot:GetTerrainType() == TerrainTypes.TERRAIN_SNOW) then
@@ -8809,7 +9087,7 @@ function EnsureLuxuryQuota()
 			return false
 		end
 		if #cands > 1 then
-			cands = GetShuffledCopyOfTable(cands);
+			cands = StockOrdered(luxID, cands);
 		end
 		cands[1]:SetResourceType(luxID, 1);
 		return true
@@ -8843,7 +9121,7 @@ function EnsureLuxuryQuota()
 			return false
 		end
 		if #cands > 1 then
-			cands = GetShuffledCopyOfTable(cands);
+			cands = StockOrdered(luxID, cands);
 		end
 		local i = 1;
 		while i <= #cands do
@@ -8854,7 +9132,7 @@ function EnsureLuxuryQuota()
 				if oldType == PlotTypes.PLOT_LAND then
 					plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
 				end
-				if plot:CanHaveResource(luxID) then
+				if LuxuryLegalAt(plot, luxID) then
 					plot:SetResourceType(luxID, 1);
 					return true
 				end
@@ -8863,7 +9141,7 @@ function EnsureLuxuryQuota()
 				end
 				if feat == FeatureTypes.NO_FEATURE and OasisNonDesertLandAdj(plot:GetX(), plot:GetY()) >= 2 then
 					plot:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
-					if plot:CanHaveResource(luxID) then
+					if LuxuryLegalAt(plot, luxID) then
 						plot:SetResourceType(luxID, 1);
 						return true
 					end
@@ -8906,13 +9184,13 @@ function EnsureLuxuryQuota()
 			y = y + 1;
 		end
 		if #cands > 1 then
-			cands = GetShuffledCopyOfTable(cands);
+			cands = StockOrdered(luxID, cands);
 		end
 		local i = 1;
 		while i <= #cands do
 			local plot = cands[i];
 			plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
-			if plot:CanHaveResource(luxID) then
+			if LuxuryLegalAt(plot, luxID) then
 				plot:SetResourceType(luxID, 1);
 				return true
 			end
@@ -9150,6 +9428,348 @@ function TrimLuxuryQuotaExcess(asp)
 	WeeveeDbgPersist("TrimLuxuryQuotaExcess trimmed=" .. nTrimmed .. " final unique=" .. nUnique .. "/" .. wantU .. " dup=" .. nDup .. "/" .. wantD .. " trip=" .. nTrip .. "/" .. wantT);
 end
 ------------------------------------------------------------------------------
+-- At most CAPITAL_LUX_MAX luxuries in a capital (the start tile and radius 3),
+-- all climates; CAPITAL_LUX_SHORT_CHANCE percent of capitals get one fewer. Corrects the sum of many passes that each add luxuries on their
+-- own (stock placement, start floor, quota padding, regional forcing), so it
+-- runs after the last of them. Excess moves out rather than disappearing, so
+-- the quota tiers keep their counts. What moves first: non-regional luxuries,
+-- then other players' regionals, and only if still over, the player's own
+-- regionals beyond the 3 that belong here. A regional stays within
+-- CAPITAL_REGIONAL_RADIUS of its owner's capital, so its region keeps its count.
+local CAPITAL_LUX_MAX = 4;
+local CAPITAL_LUX_SHORT_CHANCE = 15;
+local CAPITAL_RADIUS = 3;
+local CAPITAL_REGIONAL_IN_RING = 3;
+local CAPITAL_REGIONAL_RADIUS = 6;
+-- All capitals, the west side's with their regional luxury, and each of those
+-- luxuries' owner. West side only: the mirror overwrites the east's luxuries.
+function GatherCapitals(asp)
+	local all, west, ownerOf = {}, {}, {};
+	for pi = 0, GameDefines.MAX_MAJOR_CIVS - 1 do
+		local p = Players[pi];
+		local sp = p ~= nil and p:IsAlive() and p:GetStartingPlot() or nil;
+		if sp then
+			table.insert(all, sp);
+		end
+	end
+	local mirrored = (DEF_MIRRORED == 1);
+	for rn = 1, asp.iNumCivs do
+		local playerNum = asp.player_ID_list[rn];
+		local p = playerNum ~= nil and Players[playerNum] or nil;
+		local sp = p ~= nil and p:IsAlive() and p:GetStartingPlot() or nil;
+		if sp and (mirrored == false or IsMirrorEastSubject(sp:GetX(), sp:GetY()) == false) then
+			local lux = asp.region_luxury_assignment[rn];
+			table.insert(west, {plot = sp, lux = lux});
+			if lux ~= nil then
+				ownerOf[lux] = sp;
+			end
+		end
+	end
+	return all, west, ownerOf
+end
+------------------------------------------------------------------------------
+function InAnyCapital(capitals, x, y)
+	for _, sp in ipairs(capitals) do
+		if Map.PlotDistance(x, y, sp:GetX(), sp:GetY()) <= CAPITAL_RADIUS then
+			return true
+		end
+	end
+	return false
+end
+------------------------------------------------------------------------------
+-- Moves source's luxury onto the first target that can hold it. A target may be
+-- empty or hold a bonus resource, which gives way. keepApart skips targets next
+-- to another luxury.
+function TryMoveLuxury(source, targets, keepApart)
+	local res, amt = source:GetResourceType(-1), source:GetNumResource();
+	for _, target in ipairs(targets) do
+		local old, oldAmt = target:GetResourceType(-1), target:GetNumResource();
+		local info = old ~= -1 and GameInfo.Resources[old] or nil;
+		local free = (old == -1 or (info ~= nil and info.ResourceClassType == "RESOURCECLASS_BONUS"));
+		if free and keepApart then
+			for d = 0, DirectionTypes.NUM_DIRECTION_TYPES - 1 do
+				local adj = PlotDirNoXWrap(target:GetX(), target:GetY(), d);
+				if adj ~= nil and adj ~= source and IsWeeveeLuxuryID(adj:GetResourceType(-1)) then
+					free = false;
+				end
+			end
+		end
+		if free then
+			target:SetResourceType(-1);
+			if LuxuryLegalAt(target, res) then
+				target:SetResourceType(res, amt);
+				source:SetResourceType(-1);
+				return true
+			end
+			if old ~= -1 then
+				target:SetResourceType(old, oldAmt);
+			end
+		end
+	end
+	return false
+end
+------------------------------------------------------------------------------
+function CapCapitalLuxuries(asp)
+	if asp == nil or asp.region_luxury_assignment == nil or asp.player_ID_list == nil then
+		return
+	end
+	local iW = Map.GetGridSize();
+	local mirrored = (DEF_MIRRORED == 1);
+	local allCapitals, westCapitals, ownerOf = GatherCapitals(asp);
+	local function inAnyCapital(x, y)
+		return InAnyCapital(allCapitals, x, y);
+	end
+	local nMoved, nRemoved, nOver = 0, 0, 0;
+	for _, cap in ipairs(westCapitals) do
+		local sx, sy = cap.plot:GetX(), cap.plot:GetY();
+		local others, foreign, own = {}, {}, {};
+		local total = 0;
+		for y = sy - CAPITAL_RADIUS, sy + CAPITAL_RADIUS do
+			for x = sx - CAPITAL_RADIUS, sx + CAPITAL_RADIUS do
+				local plot = Map.GetPlot(x, y);
+				if plot ~= nil and Map.PlotDistance(sx, sy, x, y) <= CAPITAL_RADIUS then
+					local res = plot:GetResourceType(-1);
+					if IsWeeveeLuxuryID(res) then
+						total = total + 1;
+						if res == cap.lux then
+							table.insert(own, plot);
+						elseif ownerOf[res] ~= nil then
+							table.insert(foreign, plot);
+						else
+							table.insert(others, plot);
+						end
+					end
+				end
+			end
+		end
+		local limit = CAPITAL_LUX_MAX;
+		if Map.Rand(100, "Capital Luxury Short") < CAPITAL_LUX_SHORT_CHANCE then
+			limit = limit - 1;
+		end
+		asp.capitalLuxLimit = asp.capitalLuxLimit or {};
+		asp.capitalLuxLimit[cap.plot] = limit;
+		local excess = total - limit;
+		if excess > 0 then
+			local queue = {};
+			-- Farthest from the capital first, so the luxuries that stay sit close.
+			local function farthestFirst(list)
+				local copy = GetShuffledCopyOfTable(list);
+				table.sort(copy, function(a, b)
+					return Map.PlotDistance(sx, sy, a:GetX(), a:GetY()) > Map.PlotDistance(sx, sy, b:GetX(), b:GetY());
+				end);
+				return copy
+			end
+			for _, plot in ipairs(farthestFirst(others)) do table.insert(queue, plot); end
+			for _, plot in ipairs(farthestFirst(foreign)) do table.insert(queue, plot); end
+			own = farthestFirst(own);
+			for i = 1, #own - CAPITAL_REGIONAL_IN_RING do table.insert(queue, own[i]); end
+			for _, plot in ipairs(queue) do
+				if excess > 0 then
+					local owner = ownerOf[plot:GetResourceType(-1)];
+					local maxOwnerDist = CAPITAL_REGIONAL_RADIUS;
+					if owner ~= nil then
+						maxOwnerDist = math.max(maxOwnerDist, Map.PlotDistance(plot:GetX(), plot:GetY(), owner:GetX(), owner:GetY()));
+					end
+					local function banned(x, y)
+						return inAnyCapital(x, y)
+							or MirrorOwnsPlot(x, y, mirrored, iW) == false
+							or IsRiverBarrierColumn(x, y)
+							or (owner ~= nil and Map.PlotDistance(x, y, owner:GetX(), owner:GetY()) > maxOwnerDist);
+					end
+					if TryRelocateLuxury(plot, banned, CAPITAL_RADIUS * 2 + 2) then
+						nMoved = nMoved + 1;
+						excess = excess - 1;
+					elseif owner == nil then
+						plot:SetResourceType(-1);
+						nRemoved = nRemoved + 1;
+						excess = excess - 1;
+					end
+				end
+			end
+			if excess > 0 then
+				nOver = nOver + 1;
+			end
+		end
+	end
+	print("Capital luxury cap: moved", nMoved, "removed", nRemoved, "capitals still over", nOver);
+end
+------------------------------------------------------------------------------
+-- Brings capitals up to CAPITAL_LUX_MAX luxuries and pulls them closer in, as 10.5
+-- has them mostly within radius 2. Moves copies from elsewhere rather than adding
+-- any, so the quota tiers keep their counts. Each capital fills to the limit
+-- CapCapitalLuxuries rolled for it, and a ring 3 luxury sometimes stays where it is. Fill sources: the
+-- player's own regional from nearby while under 3 in the capital, then the nearest
+-- non-regional. Other players' regionals and other capitals are left alone.
+local CAPITAL_RING3_MOVE_CHANCE = 75;
+function ShapeCapitalLuxuries(asp)
+	if asp == nil or asp.region_luxury_assignment == nil or asp.player_ID_list == nil then
+		return
+	end
+	local iW, iH = Map.GetGridSize();
+	local mirrored = (DEF_MIRRORED == 1);
+	local allCapitals, westCapitals, ownerOf = GatherCapitals(asp);
+	-- Land tiles a luxury could sit on, within rings minD..maxD of the capital.
+	local function ringTiles(sx, sy, minD, maxD)
+		local tiles = {};
+		for y = sy - maxD, sy + maxD do
+			for x = sx - maxD, sx + maxD do
+				local d = Map.PlotDistance(sx, sy, x, y);
+				local plot = Map.GetPlot(x, y);
+				if plot ~= nil and d >= minD and d <= maxD and plot:IsWater() == false
+					and plot:IsMountain() == false and PlotHasNaturalWonder(plot) == false then
+					table.insert(tiles, plot);
+				end
+			end
+		end
+		return GetShuffledCopyOfTable(tiles);
+	end
+	local function luxuriesIn(sx, sy, minD, maxD)
+		local list = {};
+		for _, plot in ipairs(ringTiles(sx, sy, minD, maxD)) do
+			if IsWeeveeLuxuryID(plot:GetResourceType(-1)) then
+				table.insert(list, plot);
+			end
+		end
+		return list
+	end
+	local nFilled, nInward = 0, 0;
+	local summary = {};
+	for _, cap in ipairs(westCapitals) do
+		local sx, sy = cap.plot:GetX(), cap.plot:GetY();
+		local function nearestFirst(list)
+			table.sort(list, function(a, b)
+				return Map.PlotDistance(sx, sy, a:GetX(), a:GetY()) < Map.PlotDistance(sx, sy, b:GetX(), b:GetY());
+			end);
+			return list
+		end
+		local want = asp.capitalLuxLimit ~= nil and asp.capitalLuxLimit[cap.plot] or CAPITAL_LUX_MAX;
+		local function fillFrom(source)
+			local targets = ringTiles(sx, sy, 1, 2);
+			for _, plot in ipairs(ringTiles(sx, sy, 3, CAPITAL_RADIUS)) do
+				table.insert(targets, plot);
+			end
+			if TryMoveLuxury(source, targets, false) then
+				nFilled = nFilled + 1;
+				return true
+			end
+			return false
+		end
+		local ownOutside, otherOutside = {}, {};
+		for y = 0, iH - 1 do
+			for x = 0, iW - 1 do
+				local plot = Map.GetPlot(x, y);
+				local res = plot:GetResourceType(-1);
+				if IsWeeveeLuxuryID(res) and MirrorOwnsPlot(x, y, mirrored, iW) and InAnyCapital(allCapitals, x, y) == false then
+					if res == cap.lux then
+						if Map.PlotDistance(sx, sy, x, y) <= REGIONAL_LOCAL_R then
+							table.insert(ownOutside, plot);
+						end
+					elseif ownerOf[res] == nil then
+						table.insert(otherOutside, plot);
+					end
+				end
+			end
+		end
+		local function countOwn()
+			local n = 0;
+			for _, plot in ipairs(luxuriesIn(sx, sy, 1, CAPITAL_RADIUS)) do
+				if plot:GetResourceType(-1) == cap.lux then
+					n = n + 1;
+				end
+			end
+			return n
+		end
+		for _, source in ipairs(nearestFirst(ownOutside)) do
+			if countOwn() < CAPITAL_REGIONAL_IN_RING and #luxuriesIn(sx, sy, 1, CAPITAL_RADIUS) < want then
+				fillFrom(source);
+			end
+		end
+		for _, source in ipairs(nearestFirst(otherOutside)) do
+			if #luxuriesIn(sx, sy, 1, CAPITAL_RADIUS) < want then
+				fillFrom(source);
+			end
+		end
+		for _, plot in ipairs(luxuriesIn(sx, sy, CAPITAL_RADIUS, CAPITAL_RADIUS)) do
+			if Map.Rand(100, "Capital Ring 3 Move") < CAPITAL_RING3_MOVE_CHANCE
+				and TryMoveLuxury(plot, ringTiles(sx, sy, 1, 2), false) then
+				nInward = nInward + 1;
+			end
+		end
+		table.insert(summary, #luxuriesIn(sx, sy, 1, CAPITAL_RADIUS) .. "(" .. #luxuriesIn(sx, sy, 1, 2) .. ")");
+	end
+	local line = "Capital luxuries: filled " .. nFilled .. " moved inward " .. nInward .. "; total(within 2): " .. table.concat(summary, " ");
+	print(line);
+	WeeveeDbgPersist(line);
+end
+------------------------------------------------------------------------------
+-- Climates with cfg.frontLuxuries = {min, max}: that many non-regional luxuries per
+-- side in the two columns right before the barrier, as 10.5 tends to have. Stock
+-- random placement can reach those columns but rarely does here, since spacing,
+-- mountains and the front bonus pass all work against it. Moves copies from
+-- elsewhere rather than adding any, so the quota tiers keep their counts; regionals
+-- and luxuries in a capital stay put. A front bonus resource may give way.
+function MoveLuxuriesToFront(asp)
+	local cfg = GetBarrierConfig();
+	if cfg == nil or cfg.frontLuxuries == nil or asp == nil or asp.region_luxury_assignment == nil then
+		return
+	end
+	local iW, iH = Map.GetGridSize();
+	local mirrored = (DEF_MIRRORED == 1);
+	local col1, col2 = GetFrontMountainColumns5West(iW);
+	local regional = {};
+	for rn = 1, asp.iNumCivs do
+		local lux = asp.region_luxury_assignment[rn];
+		if lux ~= nil then
+			regional[lux] = true;
+		end
+	end
+	local capitals = {};
+	for pi = 0, GameDefines.MAX_MAJOR_CIVS - 1 do
+		local p = Players[pi];
+		local sp = p ~= nil and p:IsAlive() and p:GetStartingPlot() or nil;
+		if sp then
+			table.insert(capitals, sp);
+		end
+	end
+	local function inCapital(x, y)
+		for _, sp in ipairs(capitals) do
+			if Map.PlotDistance(x, y, sp:GetX(), sp:GetY()) <= CAPITAL_RADIUS then
+				return true
+			end
+		end
+		return false
+	end
+	local targets, sources = {}, {};
+	local have = 0;
+	local already = {};
+	for y = 0, iH - 1 do
+		for x = 0, iW - 1 do
+			local plot = Map.GetPlot(x, y);
+			if MirrorOwnsPlot(x, y, mirrored, iW) and plot:IsWater() == false and inCapital(x, y) == false then
+				local res = plot:GetResourceType(-1);
+				if x == col1 or x == col2 then
+					if IsWeeveeLuxuryID(res) then
+						have = have + 1;
+						table.insert(already, x .. "," .. y);
+					elseif plot:IsMountain() == false and PlotHasNaturalWonder(plot) == false then
+						table.insert(targets, plot);
+					end
+				elseif IsWeeveeLuxuryID(res) and regional[res] ~= true and IsRiverBarrierColumn(x, y) == false then
+					table.insert(sources, plot);
+				end
+			end
+		end
+	end
+	local want = cfg.frontLuxuries[1] + Map.Rand(cfg.frontLuxuries[2] - cfg.frontLuxuries[1] + 1, "Front Luxury Count");
+	local nMoved = 0;
+	for _, source in ipairs(GetShuffledCopyOfTable(sources)) do
+		if have + nMoved < want and TryMoveLuxury(source, GetShuffledCopyOfTable(targets), true) then
+			nMoved = nMoved + 1;
+		end
+	end
+	print("Front luxuries: wanted", want, "already there", have, "at " .. table.concat(already, " "), "moved", nMoved);
+end
+------------------------------------------------------------------------------
 -- Region-assigned luxury ID for a player index, or nil.
 function RegionalLuxuryForPlayer(asp, playerIndex)
 	if asp == nil or asp.region_luxury_assignment == nil or asp.player_ID_list == nil then
@@ -9185,7 +9805,7 @@ function EnsureStartLuxuryFloor(asp)
 		if plot:GetResourceType(-1) ~= -1 then
 			return false
 		end
-		if plot:CanHaveResource(luxID) then
+		if LuxuryLegalAt(plot, luxID) then
 			plot:SetResourceType(luxID, 1);
 			return true
 		end
@@ -9196,7 +9816,7 @@ function EnsureStartLuxuryFloor(asp)
 				if oldType == PlotTypes.PLOT_LAND then
 					plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
 				end
-				if plot:CanHaveResource(luxID) then
+				if LuxuryLegalAt(plot, luxID) then
 					plot:SetResourceType(luxID, 1);
 					return true
 				end
@@ -9526,7 +10146,7 @@ function EnsureRegionalLuxuryTarget(asp)
 						and nearAnyCapital(xx, yy, neighborBuf) == false
 						and tooCloseToSame(xx, yy, resID, 2) == false
 						and adjacentToOtherLuxury(xx, yy, resID) == false
-						and plot:CanHaveResource(resID) then
+						and LuxuryLegalAt(plot, resID) then
 						local existingRes = plot:GetResourceType(-1);
 						if existingRes == -1 then
 							table.insert(emptyCands, plot);
@@ -9541,7 +10161,7 @@ function EnsureRegionalLuxuryTarget(asp)
 		end
 		if #emptyCands > 0 then
 			if #emptyCands > 1 then
-				emptyCands = GetShuffledCopyOfTable(emptyCands);
+				emptyCands = StockOrdered(resID, emptyCands);
 			end
 			emptyCands[1]:SetResourceType(resID, 1);
 			return true
@@ -9604,8 +10224,10 @@ function EnsureRegionalLuxuryTarget(asp)
 		if resType ~= nil then
 			for row in GameInfo.Resource_TerrainBooleans() do
 				if row.ResourceType == resType then
+					-- The table also lists TERRAIN_HILL, which the game defines as a water
+					-- terrain: painting it turns the tile into a lake.
 					local t = GameInfoTypes[row.TerrainType];
-					if t ~= nil then
+					if t ~= nil and GameInfo.Terrains[t] ~= nil and GameInfo.Terrains[t].Water ~= true then
 						table.insert(list, t);
 					end
 				end
@@ -9655,10 +10277,18 @@ function EnsureRegionalLuxuryTarget(asp)
 	local function tryTerraformOnPlot(plot, resID)
 		if plot:GetPlotType() == PlotTypes.PLOT_LAND then
 			plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
-			if plot:CanHaveResource(resID) then
+			if LuxuryLegalAt(plot, resID) then
 				return true
 			end
 			plot:SetPlotType(PlotTypes.PLOT_LAND, false, false);
+		end
+		-- Oasis: terrain or a feature on a desert tile deep in the desert reads
+		-- as a stray patch, so it needs non-desert land next to it, the same
+		-- rule the Oasis quota placement uses. Landing below the regional
+		-- target is the better outcome.
+		if IsOasisClimate() and plot:GetTerrainType() == TerrainTypes.TERRAIN_DESERT
+			and OasisNonDesertLandAdj(plot:GetX(), plot:GetY()) < 2 then
+			return false
 		end
 		if plot:GetFeatureType() == FeatureTypes.NO_FEATURE then
 			local oldTerrain = plot:GetTerrainType();
@@ -9670,7 +10300,7 @@ function EnsureRegionalLuxuryTarget(asp)
 					local isPolar = (t == TerrainTypes.TERRAIN_TUNDRA or t == TerrainTypes.TERRAIN_SNOW);
 					if (isPolar == false) or (plotLatitude(plot:GetY()) > 0.5 and ClimateAllowsInteriorPolarTerrain()) then
 						plot:SetTerrainType(t, false, false);
-						if plot:CanHaveResource(resID) then
+						if LuxuryLegalAt(plot, resID) then
 							return true
 						end
 						plot:SetTerrainType(oldTerrain, false, false);
@@ -9697,7 +10327,7 @@ function EnsureRegionalLuxuryTarget(asp)
 				local isForest = (f == FeatureTypes.FEATURE_FOREST);
 				if ((isJungle == false) or plotLatitude(plot:GetY()) < 0.5) and (isForest or plot:CanHaveFeature(f)) then
 					plot:SetFeatureType(f, -1);
-					if plot:CanHaveResource(resID) then
+					if LuxuryLegalAt(plot, resID) then
 						return true
 					end
 					plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
@@ -9738,7 +10368,7 @@ function EnsureRegionalLuxuryTarget(asp)
 			yy = yy + 1;
 		end
 		if #emptyCands > 1 then
-			emptyCands = GetShuffledCopyOfTable(emptyCands);
+			emptyCands = StockOrdered(resID, emptyCands);
 		end
 		local i = 1;
 		while i <= #emptyCands do
@@ -9815,7 +10445,7 @@ function EnsureRegionalLuxuryTarget(asp)
 		end
 		if #emptyCands > 0 then
 			if #emptyCands > 1 then
-				emptyCands = GetShuffledCopyOfTable(emptyCands);
+				emptyCands = StockOrdered(resID, emptyCands);
 			end
 			emptyCands[1]:SetResourceType(resID, 1);
 			return true
@@ -9894,12 +10524,12 @@ function EnsureRegionalLuxuryTarget(asp)
 				local existing = plot:GetResourceType(-1);
 				if tier <= 3 and existing == -1 then
 					if tier == 1 then
-						if plot:CanHaveResource(resID) and adjacentToOtherLuxury(plot:GetX(), plot:GetY(), resID) == false then
+						if LuxuryLegalAt(plot, resID) and adjacentToOtherLuxury(plot:GetX(), plot:GetY(), resID) == false then
 							plot:SetResourceType(resID, 1);
 							return true
 						end
 					elseif tier == 2 then
-						if plot:CanHaveResource(resID) then
+						if LuxuryLegalAt(plot, resID) then
 							plot:SetResourceType(resID, 1);
 							return true
 						end
@@ -9910,7 +10540,7 @@ function EnsureRegionalLuxuryTarget(asp)
 				elseif tier == 4 and existing ~= -1 and existing ~= resID
 					and IsWeeveeLuxuryID(existing) and allRegionalLuxIDs[existing] ~= true then
 					plot:SetResourceType(-1);
-					if plot:CanHaveResource(resID) then
+					if LuxuryLegalAt(plot, resID) then
 						plot:SetResourceType(resID, 1);
 						return true
 					end
@@ -10204,7 +10834,7 @@ function StripStartTileLuxuries()
 									and plot:IsWater() == false
 									and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN
 									and plot:GetResourceType(-1) == -1
-									and plot:CanHaveResource(res) then
+									and LuxuryLegalAt(plot, res) then
 									table.insert(cands, plot);
 								end
 							end
@@ -10851,7 +11481,7 @@ function BuildRiverFrontDistanceField()
 		local cx, cy = qx[qi], qy[qi];
 		local cd = dist[cy * iW + cx + 1];
 		qi = qi + 1;
-		if cd < RIVER_FRONT_ZONE then
+		if cd < RiverFrontZone() then
 			local d = 0;
 			while d < DirectionTypes.NUM_DIRECTION_TYPES do
 				local adj = PlotDirNoXWrap(cx, cy, d);
@@ -10880,10 +11510,11 @@ function RiverFrontCloseness(x, y)
 	end
 	local iW = Map.GetGridSize();
 	local fd = riverFrontDist[y * iW + x + 1];
-	if fd == nil or fd < 1 or fd > RIVER_FRONT_ZONE then
+	local zone = RiverFrontZone();
+	if fd == nil or fd < 1 or fd > zone then
 		return 0
 	end
-	return RIVER_FRONT_ZONE + 1 - fd;
+	return zone + 1 - fd;
 end
 ------------------------------------------------------------------------------
 function GetRiverValueAtPlot(plot)
@@ -11099,7 +11730,12 @@ function DoRiver(startPlot, thisFlowDirection, originalFlowDirection, riverID)
 					if (adjacentPlot ~= nil) then
 					
 						local value = GetRiverValueAtPlot(adjacentPlot);
-						if (flowDirection == originalFlowDirection) then
+						-- Sticking to the river's direction is a big discount, which
+						-- along the barrier beats the westward push below, so with
+						-- riversFlowWest it doesn't apply in the front zone.
+						local cfgFlow = GetBarrierConfig();
+						local keepsDirection = not (cfgFlow ~= nil and cfgFlow.riversFlowWest and RiverFrontCloseness(riverPlotX, riverPlotY) > 0);
+						if flowDirection == originalFlowDirection and keepsDirection then
 							value = (value * 3) / 4;
 						end
 						-- In the front zone, straight N/S legs (the only two
@@ -11478,22 +12114,30 @@ function CullWestCoastShortRivers()
 	print("West coast short rivers dropped:", nDrop);
 end
 ------------------------------------------------------------------------------
--- Standard: rivers that end on dry land (mostly at the barrier, where DoRiver
--- stops and ClearRiversNearBarrier cuts) walk on to the nearest water, away
--- from the barrier. Ported from Lekmap's LekRepairDeadEndRivers. If there's no
--- way out, a one-tile lake ends the river, or, near the front or a start where a
--- new lake would change the game, the river is removed. West half only: the
--- mirror copy makes the east.
+-- Climates with cfg.repairDeadEndRivers: rivers that end on dry land (mostly at
+-- the barrier, where DoRiver stops and ClearRiversNearBarrier cuts) walk on to the
+-- nearest water, away from the barrier. Ported from Lekmap's LekRepairDeadEndRivers.
+-- If there's no way out, a one-tile lake ends the river, or, near the front or a
+-- start where a new lake would change the game, or on a climate with
+-- riverRepairLakes = false, the river is removed. West side only: the mirror copy
+-- makes the east.
 --
 -- River flags: W = on the plot's east edge (corners NE and SE, flow N/S), NW = on
 -- its southeast edge (corners SE and S, flow NE/SW), NE = on its southwest edge
 -- (corners S and SW, flow SE/NW). A corner is identified by its three plots.
 local RIVER_REPAIR_MAX_STEPS = 30;
 local RIVER_REPAIR_LAKE_START_DIST = 3;
-function RepairDeadEndRivers()
-	if IsPlainStandardClimate() == false then
-		return
+-- The west side, whose plots the mirror keeps: on Standard-Diagonal that's the west
+-- of the fold, which reaches past mid on some rows and stops short of it on others.
+function MirrorSourcePlot(x, y)
+	if IsTiltedMirrorAxis() and IsBramble() == false then
+		return TiltedSignedDist(x, y) > 0;
 	end
+	return x <= Map.GetGridSize() * 0.5;
+end
+------------------------------------------------------------------------------
+-- Corners and edges of the river network. See the river flags above.
+function MakeRiverGraph()
 	local iW, iH = Map.GetGridSize();
 	local D = DirectionTypes;
 	local F = FlowDirectionTypes;
@@ -11579,6 +12223,73 @@ function RepairDeadEndRivers()
 		end
 		return false;
 	end
+	-- Whether the flow leaving corner "from" passes through corner "target". The
+	-- walk must not step onto such a corner: that closes the river into a loop
+	-- with no mouth, which flowsOn alone would accept as a river that flows on.
+	local function flowReaches(from, target)
+		local seen = {};
+		local stack = {from};
+		while #stack > 0 do
+			local cur = table.remove(stack);
+			if cur.key == target.key then return true; end
+			if not seen[cur.key] then
+				seen[cur.key] = true;
+				for _, o in ipairs(cornerEdges(cur)) do
+					if o and hasRiver(o) then
+						local dn = downstream(o);
+						if dn ~= nil and dn.key ~= cur.key then table.insert(stack, dn); end
+					end
+				end
+			end
+		end
+		return false;
+	end
+	return {
+		nb = nb, edge = edge, hasRiver = hasRiver, setRiver = setRiver, downstream = downstream,
+		edgeBetween = edgeBetween, cornerEdges = cornerEdges, touchesWaterOrEdge = touchesWaterOrEdge,
+		touchesBarrier = touchesBarrier, sameEdge = sameEdge, flowsOn = flowsOn, flowReaches = flowReaches,
+	};
+end
+------------------------------------------------------------------------------
+-- After the mirror: rivers that still end on land, and edges in a closed loop,
+-- over the whole map. A closed loop made the game load forever. Rivers cut by
+-- other passes on climates without the repair show up here too.
+function LogRiverCheck()
+	local iW, iH = Map.GetGridSize();
+	local g = MakeRiverGraph();
+	local nDead, nLoop = 0, 0;
+	for y = 0, iH - 1 do
+		for x = 0, iW - 1 do
+			local p = Map.GetPlot(x, y);
+			for _, flag in ipairs({"W", "NW", "NE"}) do
+				if RiverEdgeStillSet(p, flag) then
+					local e = g.edge(p, flag);
+					local dn = g.downstream(e);
+					if dn ~= nil then
+						if not g.touchesWaterOrEdge(dn) and not g.flowsOn(dn, e) then
+							nDead = nDead + 1;
+						end
+						local up = e.a;
+						if dn.key == e.a.key then up = e.b; end
+						if g.flowReaches(dn, up) then nLoop = nLoop + 1; end
+					end
+				end
+			end
+		end
+	end
+	print("River check after mirror: dead ends", nDead, "loop edges", nLoop);
+end
+------------------------------------------------------------------------------
+function RepairDeadEndRivers()
+	local cfg = GetBarrierConfig();
+	if cfg == nil or cfg.repairDeadEndRivers ~= true then
+		return
+	end
+	local iW, iH = Map.GetGridSize();
+	local g = MakeRiverGraph();
+	local nb, edge, hasRiver, setRiver, downstream = g.nb, g.edge, g.hasRiver, g.setRiver, g.downstream;
+	local edgeBetween, cornerEdges, touchesWaterOrEdge = g.edgeBetween, g.cornerEdges, g.touchesWaterOrEdge;
+	local touchesBarrier, sameEdge, flowsOn, flowReaches = g.touchesBarrier, g.sameEdge, g.flowsOn, g.flowReaches;
 	-- Distance of every plot to the nearest water.
 	local dist = BuildRiverWaterDistanceField();
 	local function cornerCost(c)
@@ -11617,6 +12328,9 @@ function RepairDeadEndRivers()
 		if p == nil or p:IsWater() or p:IsMountain() or p:GetResourceType(-1) ~= -1 or PlotHasNaturalWonder(p) then
 			return false;
 		end
+		if cfg.riverRepairLakes == false or WaterAllowedAtXY(p:GetX(), p:GetY()) == false then
+			return false;
+		end
 		if RiverFrontCloseness(p:GetX(), p:GetY()) > 0 or IsRiverBarrierColumn(p:GetX(), p:GetY()) then
 			return false;
 		end
@@ -11635,12 +12349,11 @@ function RepairDeadEndRivers()
 	end
 	-- Collect the dead ends first, then repair them.
 	local dead = {};
-	local mid = math.floor(iW / 2);
 	for y = 0, iH - 1 do
-		for x = 0, mid - 1 do
+		for x = 0, iW - 1 do
 			local p = Map.GetPlot(x, y);
 			for _, flag in ipairs({"W", "NW", "NE"}) do
-				if RiverEdgeStillSet(p, flag) then
+				if MirrorSourcePlot(x, y) and RiverEdgeStillSet(p, flag) then
 					local e = edge(p, flag);
 					local c = downstream(e);
 					if c ~= nil and not touchesWaterOrEdge(c) and not flowsOn(c, e) then
@@ -11667,7 +12380,7 @@ function RepairDeadEndRivers()
 						else
 							nextC, fl = o.a, o.fa;
 						end
-						if not visited[nextC.key] and not touchesBarrier(nextC) then
+						if not visited[nextC.key] and not touchesBarrier(nextC) and not flowReaches(nextC, c) then
 							if hasRiver(o) then
 								local dn = downstream(o);
 								if dn ~= nil and dn.key == nextC.key then
@@ -11733,12 +12446,12 @@ function AddRivers()
 	riverWaterDist = BuildRiverWaterDistanceField();
 	riverFrontDist = BuildRiverFrontDistanceField();
 	-- Front-zone source thinning: none in the 2 tiles nearest the barrier,
-	-- half in the next 2. Passes 3-4 top rivers back up per landmass
+	-- half in the rest of the zone. Passes 3-4 top rivers back up per landmass
 	-- (area river-edge quota), so the total mostly moves west rather than
 	-- disappearing.
 	local function frontSourceSkip(x, y)
 		local c = RiverFrontCloseness(x, y);
-		if c >= RIVER_FRONT_ZONE - 1 then
+		if c >= RiverFrontZone() - 1 then
 			return true
 		end
 		return c > 0 and Map.Rand(2, "River front source thin") == 0;
@@ -11906,9 +12619,16 @@ function AddRivers()
 										end
 									end
 								elseif IsSnowBarrier() then
+									-- A river can never flow opposite its starting direction,
+									-- so one starting east can't turn back at the barrier and
+									-- runs along it. With riversFlowWest every river starts
+									-- west, as in 10.5.
 									local lakeX = iW / 4;
 									if start_x >= iW / 2 then
 										lakeX = iW * 0.75;
+									end
+									if cfgRivers ~= nil and cfgRivers.riversFlowWest then
+										lakeX = -1;
 									end
 									if start_y < iH / 2 then
 										if start_x < lakeX then
@@ -11960,7 +12680,9 @@ function AddRivers()
 				if p:IsNWOfRiver() then n = n + 1; end
 				if p:IsNEOfRiver() then n = n + 1; end
 				total = total + n;
-				if RiverFrontCloseness(cx, cy) > 0 then
+				-- A fixed width, so rolls stay comparable whatever the climate's zone is.
+				local fd = riverFrontDist ~= nil and riverFrontDist[cy * iW + cx + 1] or nil;
+				if fd ~= nil and fd >= 1 and fd <= RIVER_FRONT_ZONE then
 					front = front + n;
 					if p:IsWOfRiver() then frontNS = frontNS + 1; end
 				end
@@ -12542,9 +13264,228 @@ function SetDivide()
 	end
 	PaintStandardSnowRelief();
 	CapBarrierMountains();
+	PlaceContactMountains();
 end
 
 ------------------------------------------------------------------------------
+-- Climates with cfg.shapeClearRadius = {min, max}: mountains on the front line and
+-- further back that are near a snow shape of 2 or more tiles become hills, like a
+-- luxury's ripple, so a shape can stand out without the front getting harder to push
+-- through. The radius is rolled per map. The rows it covers on the front line are
+-- marked so AuditFrontMountainGaps doesn't refill them.
+function ClearFrontLineAroundShapes(cfg, half, foldAt)
+	local shapes = mountainRoll.shapeTiles;
+	local zone = frontMountainZones[#frontMountainZones];
+	mountainRoll.lineCleared = 0;
+	if cfg.shapeClearRadius == nil or shapes == nil or zone == nil then
+		return
+	end
+	local lo, hi = cfg.shapeClearRadius[1], cfg.shapeClearRadius[2];
+	local radius = lo + Map.Rand(hi - lo + 1, "Shape Clear Radius");
+	mountainRoll.clearRadius = radius;
+	local iW, iH = Map.GetGridSize();
+	local function nearShape(x, y)
+		for _, tile in ipairs(shapes) do
+			if tile:IsMountain() and Map.PlotDistance(x, y, tile:GetX(), tile:GetY()) <= radius then
+				return true
+			end
+		end
+		return false
+	end
+	zone.clearedRows = {};
+	mountainRoll.behindCleared = 0;
+	for y = 1, iH - 2 do
+		local lineX = foldAt(y) - (half + 2);
+		if nearShape(lineX, y) then
+			zone.clearedRows[y] = true;
+		end
+		for x = 0, lineX do
+			local plot = Map.GetPlot(x, y);
+			if plot ~= nil and plot:IsMountain() and MirrorSourcePlot(x, y)
+				and PlotHasNaturalWonder(plot) == false and nearShape(x, y) then
+				plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
+				if x == lineX then
+					mountainRoll.lineCleared = mountainRoll.lineCleared + 1;
+				else
+					mountainRoll.behindCleared = mountainRoll.behindCleared + 1;
+				end
+			end
+		end
+	end
+end
+------------------------------------------------------------------------------
+-- Climates with cfg.contactMountains = {min, max}: that many small mountain groups
+-- (1-3 tiles) where the tundra column meets the snow, with hill fingers around them,
+-- to break up the long straight edge of a diagonal barrier. Runs after
+-- CapBarrierMountains, whose limit is about the snow's own relief. Together with the
+-- snow's mountains they stay within cfg.barrierMountainMax, and they stay out of the
+-- front's opening. What makes a front hard to fight through is the wall of mountains
+-- on the front line and tundra column, not the total, so once that wall reaches
+-- cfg.frontWallMax they only go on the snow.
+function PlaceContactMountains()
+	local cfg = GetBarrierConfig();
+	if cfg == nil or cfg.contactMountains == nil then
+		return
+	end
+	local iW, iH = Map.GetGridSize();
+	local _, centerN = ResolveSnowWrapWidths();
+	local half = centerN / 2;
+	local zone = frontMountainZones[#frontMountainZones];
+	local function foldAt(y)
+		if cfg.tilted == true then
+			return TiltedFoldMid(y);
+		end
+		return math.floor(iW / 2);
+	end
+	local function rowOk(y)
+		return y >= 1 and y <= iH - 2 and (zone == nil or y < zone.openStart or y > zone.openEnd);
+	end
+	-- Land on this side, between offsets lo and hi from the row's fold.
+	local function inBand(x, y, lo, hi)
+		local off = x - foldAt(y);
+		if off < lo or off > hi or y < 0 or y >= iH or MirrorSourcePlot(x, y) == false then
+			return false
+		end
+		local plot = Map.GetPlot(x, y);
+		return plot ~= nil and plot:IsWater() == false and PlotHasNaturalWonder(plot) == false;
+	end
+	-- A mountain, unless it would grow a group past the clump limit.
+	local function placeMountain(plot)
+		local old = plot:GetPlotType();
+		plot:SetPlotType(PlotTypes.PLOT_MOUNTAIN, false, false);
+		if LiveMountainClumpSize(plot:GetX(), plot:GetY(), FRONT_MOUNTAIN_CLUMP_CAP) > FRONT_MOUNTAIN_CLUMP_CAP then
+			plot:SetPlotType(old, false, false);
+			return false
+		end
+		return true
+	end
+	local function randomNeighbour(plot, lo, hi)
+		local dir = HexDirsForY(plot:GetY())[1 + Map.Rand(6, "Contact Mountain Dir")];
+		local nx, ny = plot:GetX() + dir[1], plot:GetY() + dir[2];
+		if inBand(nx, ny, lo, hi) then
+			return Map.GetPlot(nx, ny);
+		end
+		return nil
+	end
+	local rows = {};
+	for y = 1, iH - 2 do
+		if rowOk(y) then
+			table.insert(rows, y);
+		end
+	end
+	local want = cfg.contactMountains[1] + Map.Rand(cfg.contactMountains[2] - cfg.contactMountains[1] + 1, "Contact Mountain Groups");
+	local snowMountains = 0;
+	for y = 0, iH - 1 do
+		for x = 0, iW - 1 do
+			if inBand(x, y, -half, -1) and Map.GetPlot(x, y):IsMountain() then
+				snowMountains = snowMountains + 1;
+			end
+		end
+	end
+	local budget = cfg.barrierMountainMax - snowMountains;
+	local wall = 0;
+	for y = 0, iH - 1 do
+		for off = -(half + 2), -(half + 1) do
+			local x = foldAt(y) + off;
+			if inBand(x, y, off, off) and Map.GetPlot(x, y):IsMountain() then
+				wall = wall + 1;
+			end
+		end
+	end
+	-- Contact mountains may use the tundra column only while the wall has room.
+	local function contactFrom()
+		if wall < (cfg.frontWallMax or math.huge) then
+			return -(half + 1);
+		end
+		return -half;
+	end
+	local function placeContact(plot)
+		if placeMountain(plot) then
+			if plot:GetX() - foldAt(plot:GetY()) == -(half + 1) then
+				wall = wall + 1;
+			end
+			return true
+		end
+		return false
+	end
+	local groupRows = {};
+	local contactGroups = {};
+	local mountains = {};
+	-- The tundra column and the first snow column meet here.
+	local contactLo, contactHi = -(half + 1), -half;
+	for _, y in ipairs(GetShuffledCopyOfTable(rows)) do
+		local apart = true;
+		for _, used in ipairs(groupRows) do
+			if math.abs(used - y) < 4 then
+				apart = false;
+			end
+		end
+		local from = contactFrom();
+		local x = foldAt(y) + from + Map.Rand(contactHi - from + 1, "Contact Mountain Column");
+		if #groupRows < want and #mountains < budget and apart and inBand(x, y, from, contactHi) then
+			local seed = Map.GetPlot(x, y);
+			if seed:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN and placeContact(seed) then
+				table.insert(groupRows, y);
+				table.insert(mountains, seed);
+				local sizeRoll = Map.Rand(100, "Contact Mountain Size");
+				local size = 1;
+				local odds = cfg.groupSizeOdds or {60, 90};
+				if sizeRoll >= odds[2] then
+					size = 3;
+				elseif sizeRoll >= odds[1] then
+					size = 2;
+				end
+				local group = {seed};
+				local tries = 0;
+				while #group < size and #mountains < budget and tries < 12 do
+					tries = tries + 1;
+					local adj = randomNeighbour(group[1 + Map.Rand(#group, "Contact Mountain Grow")], contactFrom(), contactHi);
+					if adj ~= nil and rowOk(adj:GetY()) and adj:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN and placeContact(adj) then
+						table.insert(group, adj);
+						table.insert(mountains, adj);
+					end
+				end
+				table.insert(contactGroups, #group .. "@row" .. y);
+				if #group >= 2 then
+					mountainRoll.shapeTiles = mountainRoll.shapeTiles or {};
+					for _, tile in ipairs(group) do
+						table.insert(mountainRoll.shapeTiles, tile);
+					end
+				end
+			end
+		end
+	end
+	-- Hill fingers: 2-4 per mountain, each wandering 1-3 steps, from the front column
+	-- through the tundra column and this side's snow.
+	local nHills = 0;
+	for _, mountain in ipairs(mountains) do
+		for finger = 1, 2 + Map.Rand(3, "Contact Finger Count") do
+			local at = mountain;
+			for step = 1, 1 + Map.Rand(3, "Contact Finger Length") do
+				local adj = randomNeighbour(at, -(half + 2), -1);
+				if adj == nil or adj:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
+					break
+				end
+				if adj:GetPlotType() == PlotTypes.PLOT_LAND then
+					adj:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
+					nHills = nHills + 1;
+				end
+				at = adj;
+			end
+		end
+	end
+	ClearFrontLineAroundShapes(cfg, half, foldAt);
+	mountainRoll.contactWant, mountainRoll.contactBudget = want, budget;
+	mountainRoll.contactGroups, mountainRoll.contactMountains, mountainRoll.contactHills = contactGroups, #mountains, nHills;
+	print("Contact mountains: groups", #groupRows, "mountains", #mountains, "hills", nHills, "snow mountains", snowMountains);
+end
+
+------------------------------------------------------------------------------
+-- Standard and Standard-Diagonal: the center snow's relief. A varying number of
+-- mountain groups of 1-3 tiles, hills wandering off them as uneven fingers rather
+-- than a ring around them, and now and then a lone hill out on the flat. At
+-- least half the snow stays flat, not counting the lone hills.
+local SNOW_MOUNTAIN_MAX = 8;
 function PaintStandardSnowRelief()
 	local cfg = GetBarrierConfig();
 	if cfg == nil or cfg.kind ~= "snow" then
@@ -12552,213 +13493,148 @@ function PaintStandardSnowRelief()
 	end
 	local iW, iH = Map.GetGridSize();
 	local mirrored = (DEF_MIRRORED == 1);
-	local evenN = {{0, 1}, {1, 0}, {0, -1}, {-1, -1}, {-1, 0}, {-1, 1}};
-	local oddN = {{1, 1}, {1, 0}, {1, -1}, {0, -1}, {-1, 0}, {0, 1}};
 	local land = {};
-	local y = 0;
-	while y < iH do
-		local snowCols = GetSnowWrapColumns(iW, y);
+	local inSnow = {};
+	for y = 0, iH - 1 do
 		local tundra = {};
-		local tc = GetSnowWrapTundraColumns(iW, y);
-		local ti = 1;
-		while ti <= #tc do
-			tundra[tc[ti]] = true;
-			ti = ti + 1;
+		for _, x in ipairs(GetSnowWrapTundraColumns(iW, y)) do
+			tundra[x] = true;
 		end
-		local ci = 1;
-		while ci <= #snowCols do
-			local x = snowCols[ci];
+		for _, x in ipairs(GetSnowWrapColumns(iW, y)) do
 			if tundra[x] ~= true and MirrorOwnsPlot(x, y, mirrored, iW) then
 				local plot = Map.GetPlot(x, y);
 				if plot ~= nil and plot:IsWater() == false then
 					table.insert(land, plot);
+					inSnow[y * iW + x] = true;
 				end
 			end
-			ci = ci + 1;
 		end
-		y = y + 1;
 	end
 	if #land < 1 then
 		return
 	end
-	local function isTundraColAt(x, y)
-		local tc = GetSnowWrapTundraColumns(iW, y);
-		local i = 1;
-		while i <= #tc do
-			if tc[i] == x then
+	-- The neighbouring snow tile in a random direction, or nil.
+	local function randomNeighbour(plot)
+		local adj = PlotDirNoXWrap(plot:GetX(), plot:GetY(), Map.Rand(DirectionTypes.NUM_DIRECTION_TYPES, "Snow Relief Dir"));
+		if adj ~= nil and inSnow[adj:GetY() * iW + adj:GetX()] then
+			return adj
+		end
+		return nil
+	end
+	local function touches(plot, plotType)
+		for d = 0, DirectionTypes.NUM_DIRECTION_TYPES - 1 do
+			local adj = PlotDirNoXWrap(plot:GetX(), plot:GetY(), d);
+			if adj ~= nil and adj:GetPlotType() == plotType then
 				return true
 			end
-			i = i + 1;
 		end
 		return false
 	end
-	local nPeak = 2 + Map.Rand(2, "Snow Peak Count");
-	if IsPlainStandardClimate() then
-		nPeak = 0; -- a peak behind the front line is another mountain layer
+
+	-- Mountain groups: usually 2-4 per map, sometimes 1 or 5.
+	local roll = Map.Rand(100, "Snow Mountain Groups");
+	local nGroups = 5;
+	if roll < 10 then
+		nGroups = 1;
+	elseif roll < 35 then
+		nGroups = 2;
+	elseif roll < 65 then
+		nGroups = 3;
+	elseif roll < 90 then
+		nGroups = 4;
 	end
-	local gap = math.floor(#land / (nPeak + 1));
-	if gap < 2 then
-		gap = 2;
-	end
-	local nMtn = 0;
-	local nHill = 0;
-	local pi = 1;
-	while pi <= nPeak do
-		local idx = gap * pi;
-		if idx > #land then
-			idx = #land;
-		end
-		local jitter = 0;
-		if gap > 2 then
-			jitter = Map.Rand(3, "Snow Peak Jitter") - 1;
-		end
-		idx = idx + jitter;
-		if idx < 1 then
-			idx = 1;
-		end
-		if idx > #land then
-			idx = #land;
-		end
-		local seed = land[idx];
-		seed:SetPlotType(PlotTypes.PLOT_MOUNTAIN, false, false);
-		nMtn = nMtn + 1;
-		local d = 0;
-		while d < DirectionTypes.NUM_DIRECTION_TYPES do
-			local adj = PlotDirNoXWrap(seed:GetX(), seed:GetY(), d);
-			if adj ~= nil and adj:IsWater() == false and adj:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
-				if isTundraColAt(adj:GetX(), adj:GetY()) ~= true then
-					adj:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
-					nHill = nHill + 1;
+	nGroups = math.max(nGroups, cfg.snowGroupsMin or 1);
+	local mountains = {};
+	local snowGroups = {};
+	local nPlacedGroups = 0;
+	local maxMountains = cfg.snowMountainMax or SNOW_MOUNTAIN_MAX;
+	for _, seed in ipairs(GetShuffledCopyOfTable(land)) do
+		if nPlacedGroups < nGroups and #mountains < maxMountains and touches(seed, PlotTypes.PLOT_MOUNTAIN) == false then
+			nPlacedGroups = nPlacedGroups + 1;
+			local sizeRoll = Map.Rand(100, "Snow Mountain Size");
+			local size = 1;
+			local odds = cfg.groupSizeOdds or {65, 90};
+			if sizeRoll >= odds[2] then
+				size = 3;
+			elseif sizeRoll >= odds[1] then
+				size = 2;
+			end
+			seed:SetPlotType(PlotTypes.PLOT_MOUNTAIN, false, false);
+			table.insert(mountains, seed);
+			local group = {seed};
+			local tries = 0;
+			while #group < size and #mountains < maxMountains and tries < 12 do
+				tries = tries + 1;
+				local adj = randomNeighbour(group[1 + Map.Rand(#group, "Snow Mountain Grow")]);
+				if adj ~= nil and adj:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
+					adj:SetPlotType(PlotTypes.PLOT_MOUNTAIN, false, false);
+					table.insert(group, adj);
+					table.insert(mountains, adj);
 				end
 			end
-			d = d + 1;
-		end
-		d = 0;
-		while d < DirectionTypes.NUM_DIRECTION_TYPES do
-			local adj = PlotDirNoXWrap(seed:GetX(), seed:GetY(), d);
-			if adj ~= nil then
-				local d2 = 0;
-				while d2 < DirectionTypes.NUM_DIRECTION_TYPES do
-					local ring = PlotDirNoXWrap(adj:GetX(), adj:GetY(), d2);
-					if ring ~= nil and ring:IsWater() == false and ring:GetPlotType() == PlotTypes.PLOT_LAND then
-		if isTundraColAt(adj:GetX(), adj:GetY()) ~= true and Map.Rand(100, "Snow Foothill") < 28 then
-							ring:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
-							nHill = nHill + 1;
-						end
-					end
-					d2 = d2 + 1;
+			table.insert(snowGroups, #group);
+			if #group >= 2 then
+				mountainRoll.shapeTiles = mountainRoll.shapeTiles or {};
+				for _, tile in ipairs(group) do
+					table.insert(mountainRoll.shapeTiles, tile);
 				end
 			end
-			d = d + 1;
 		end
-		pi = pi + 1;
 	end
-	local nRidge = 1 + Map.Rand(2, "Snow Ridge Count");
-	local ri = 1;
-	while ri <= nRidge do
-		local seed = land[Map.Rand(#land, "Snow Ridge Seed") + 1];
-		if seed:GetPlotType() == PlotTypes.PLOT_LAND then
-			seed:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
-			nHill = nHill + 1;
-			local len = 2 + Map.Rand(2, "Snow Ridge Len");
-			local cx = seed:GetX();
-			local cy = seed:GetY();
-			local step = 1;
-			while step < len do
-				local dirs = evenN;
-				if cy % 2 ~= 0 then
-					dirs = oddN;
-				end
-				local picks = {};
-				local di = 1;
-				while di <= 6 do
-					local nx = cx + dirs[di][1];
-					local ny = cy + dirs[di][2];
-					local adj = Map.GetPlot(nx, ny);
-					if adj ~= nil and adj:IsWater() == false and adj:GetPlotType() == PlotTypes.PLOT_LAND then
-						if isTundraColAt(nx, ny) ~= true then
-							table.insert(picks, adj);
-						end
-					end
-					di = di + 1;
-				end
-				if #picks < 1 then
+
+	-- Hill fingers: 3-6 per mountain, each wandering 1-5 steps.
+	for _, mountain in ipairs(mountains) do
+		for finger = 1, 3 + Map.Rand(4, "Snow Finger Count") do
+			local at = mountain;
+			for step = 1, 1 + Map.Rand(5, "Snow Finger Length") do
+				local adj = randomNeighbour(at);
+				if adj == nil or adj:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
 					break
 				end
-				local nxt = picks[Map.Rand(#picks, "Snow Ridge Step") + 1];
-				nxt:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
-				nHill = nHill + 1;
-				cx = nxt:GetX();
-				cy = nxt:GetY();
-				step = step + 1;
+				adj:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
+				at = adj;
 			end
 		end
-		ri = ri + 1;
 	end
-	local nLand = 0;
-	local nSolid = 0;
+
 	local hills = {};
-	local hi = 1;
-	while hi <= #land do
-		local p = land[hi];
-		if p:IsWater() == false then
-			nSolid = nSolid + 1;
-			local pt = p:GetPlotType();
-			if pt == PlotTypes.PLOT_LAND then
-				nLand = nLand + 1;
-			elseif pt == PlotTypes.PLOT_HILLS then
-				table.insert(hills, p);
-			end
-		end
-		hi = hi + 1;
-	end
-	local nNeed = math.ceil(nSolid * 0.5);
-	if nLand < nNeed and #hills > 0 then
-		hills = GetShuffledCopyOfTable(hills);
-		local far = {};
-		local near = {};
-		hi = 1;
-		while hi <= #hills do
-			local p = hills[hi];
-			local touch = false;
-			local d = 0;
-			while d < DirectionTypes.NUM_DIRECTION_TYPES do
-				local adj = PlotDirNoXWrap(p:GetX(), p:GetY(), d);
-				if adj ~= nil and adj:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
-					touch = true;
-					break
-				end
-				d = d + 1;
-			end
-			if touch then
-				table.insert(near, p);
-			else
-				table.insert(far, p);
-			end
-			hi = hi + 1;
-		end
-		local queue = {};
-		hi = 1;
-		while hi <= #far do
-			table.insert(queue, far[hi]);
-			hi = hi + 1;
-		end
-		hi = 1;
-		while hi <= #near do
-			table.insert(queue, near[hi]);
-			hi = hi + 1;
-		end
-		hi = 1;
-		while nLand < nNeed and hi <= #queue do
-			if queue[hi]:GetPlotType() == PlotTypes.PLOT_HILLS then
-				queue[hi]:SetPlotType(PlotTypes.PLOT_LAND, false, false);
-				nLand = nLand + 1;
-				nHill = nHill - 1;
-			end
-			hi = hi + 1;
+	local nFlat = 0;
+	for _, plot in ipairs(land) do
+		if plot:GetPlotType() == PlotTypes.PLOT_LAND then
+			nFlat = nFlat + 1;
+		elseif plot:GetPlotType() == PlotTypes.PLOT_HILLS then
+			table.insert(hills, plot);
 		end
 	end
-	print("Standard snow relief: peaks=", nMtn, " hills=", nHill, " flat=", nLand, "/", nSolid);
+	for _, plot in ipairs(GetShuffledCopyOfTable(hills)) do
+		if nFlat < math.ceil(#land * 0.5) then
+			plot:SetPlotType(PlotTypes.PLOT_LAND, false, false);
+			nFlat = nFlat + 1;
+		end
+	end
+
+	-- Lone hills: none on most maps.
+	roll = Map.Rand(100, "Snow Lone Hills");
+	local wantLone = 0;
+	if roll >= 95 then
+		wantLone = 3;
+	elseif roll >= 80 then
+		wantLone = 2;
+	elseif roll >= 50 then
+		wantLone = 1;
+	end
+	local nLone = 0;
+	for _, plot in ipairs(GetShuffledCopyOfTable(land)) do
+		if nLone < wantLone and plot:GetPlotType() == PlotTypes.PLOT_LAND
+			and touches(plot, PlotTypes.PLOT_HILLS) == false and touches(plot, PlotTypes.PLOT_MOUNTAIN) == false then
+			plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
+			nLone = nLone + 1;
+		end
+	end
+	mountainRoll.snowGroups = snowGroups;
+	mountainRoll.snowFingerHills = #land - #mountains - nFlat;
+	mountainRoll.snowLoneHills = nLone;
+	print("Standard snow relief: mountain groups=", nPlacedGroups, " mountains=", #mountains, " finger hills=", #land - #mountains - nFlat, " lone hills=", nLone, " flat=", nFlat - nLone, "/", #land);
 end
 ------------------------------------------------------------------------------
 function CapBarrierMountains()
@@ -12793,8 +13669,8 @@ function CapBarrierMountains()
 	end
 	local n = #mtns;
 	local maxMtns = 4;
-	if IsPlainStandardClimate() then
-		maxMtns = 0;
+	if IsStandardClimate() then
+		maxMtns = GetBarrierConfig().snowMountainMax or SNOW_MOUNTAIN_MAX;
 	end
 	if n <= maxMtns then
 		print("Barrier mountains:", n);
@@ -12822,21 +13698,18 @@ function CountSnowForestNeighbors(plot)
 	return n;
 end
 ------------------------------------------------------------------------------
--- Standard: the center snow barrier is bare (flat, hills or mountain). Forest
--- placed by the barrier pass is already off (forestPct 0); this catches what the
+-- Standard and Standard-Diagonal: the center snow barrier is bare (flat, hills or
+-- mountain). Forest placed by the barrier pass is already off (forestPct 0); this catches what the
 -- stock feature pass and AddForestToResource put there. Snow elsewhere keeps its
 -- forests.
 function StripStandardSnowForests()
-	if IsPlainStandardClimate() == false then
+	if IsStandardClimate() == false then
 		return
 	end
 	local iW, iH = Map.GetGridSize();
-	local wrapN, centerN = ResolveSnowWrapWidths();
-	local half = centerN / 2;
-	local mid = math.floor(iW / 2);
 	local n = 0;
 	for y = 0, iH - 1 do
-		for x = mid - half, mid + half - 1 do
+		for _, x in ipairs(GetSnowWrapColumns(iW, y)) do
 			local plot = Map.GetPlot(x, y);
 			if plot ~= nil and plot:GetTerrainType() == TerrainTypes.TERRAIN_SNOW and plot:GetFeatureType() == FeatureTypes.FEATURE_FOREST then
 				plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
@@ -17365,7 +18238,13 @@ function AddPeaksBackCoastIslands()
 			break
 		end
 	end
-	print("Peaks back-coast islands: tiles placed=", 17 - budget, " islands=", nIslandsPlaced);
+	-- A few small islands next to the chunky ones.
+	local nSmall = 0;
+	local nWantSmall = 1 + Map.Rand(3, "Peaks BackCoast Small Island Count");
+	while nSmall < nWantSmall and placeIsland(1 + Map.Rand(4, "Peaks BackCoast Small Island Size")) > 0 do
+		nSmall = nSmall + 1;
+	end
+	print("Peaks back-coast islands: tiles placed=", 17 - budget, " islands=", nIslandsPlaced, " small=", nSmall);
 end
 ------------------------------------------------------------------------------
 function AddPeaksRainShadowDesert()
@@ -20576,7 +21455,7 @@ function FixNorthUniqueLuxuries()
 								local pi = 1;
 								while pi <= #list do
 									local p = list[pi];
-									if p:GetY() < northY and p:IsWater() == uWater and p:CanHaveResource(u) then
+									if p:GetY() < northY and p:IsWater() == uWater and LuxuryLegalAt(p, u) then
 										p:SetResourceType(u, 1);
 										done = true;
 										break
@@ -20597,7 +21476,7 @@ function FixNorthUniqueLuxuries()
 										end
 										pi = pi + 1;
 									end
-									if sameDomain and plot:CanHaveResource(resID) then
+									if sameDomain and LuxuryLegalAt(plot, resID) then
 										plot:SetResourceType(resID, 1);
 										done = true;
 									end
@@ -20698,17 +21577,19 @@ function MirrorPlotsAfterResourcePlacement()
 	-- rivers
 	-- mirrorize rivers
 	--rivers
-	for x = math.floor(iW / 2)+1, iW - 1 do
+	for x = 0, iW - 1 do
 		for y = 0, iH - 1 do
-			local plot = Map.GetPlot(x, y)
-			plot:SetWOfRiver(false,FlowDirectionTypes.NO_FLOWDIRECTION)
-			plot:SetNWOfRiver(false,FlowDirectionTypes.NO_FLOWDIRECTION)
-			plot:SetNEOfRiver(false,FlowDirectionTypes.NO_FLOWDIRECTION)
+			if MirrorSourcePlot(x, y) == false then
+				local plot = Map.GetPlot(x, y)
+				plot:SetWOfRiver(false,FlowDirectionTypes.NO_FLOWDIRECTION)
+				plot:SetNWOfRiver(false,FlowDirectionTypes.NO_FLOWDIRECTION)
+				plot:SetNEOfRiver(false,FlowDirectionTypes.NO_FLOWDIRECTION)
+			end
 		end
 	end
 	for y = 0, iH - 1 do
-		for x = 0, iW * 0.5 do
-		    if ( x < (iW/2 + 1) ) then
+		for x = 0, iW - 1 do
+		    if MirrorSourcePlot(x, y) then
             	local plot = Map.GetPlot(x, y);
 				if ( plot:IsWOfRiver() ) then
 					local mirrorPlot = getMirroredPlot(plot);
@@ -20778,6 +21659,7 @@ function StartPlotSystem()
 
 	WeeveeDbg("Create start db");
 	local start_plot_database = AssignStartingPlots.Create()
+	weeveeLuxuryAsp = start_plot_database;
 	WeeveeDbg("GenerateRegions");
 	start_plot_database:GenerateRegions()
 	WeeveeDbg("SetDivide");
@@ -20823,6 +21705,7 @@ function StartPlotSystem()
 	WeeveeDbgCall("PlaceNaturalWonders", function() start_plot_database:PlaceNaturalWonders(wonderargs) end);
 	WeeveeDbgCall("StripSeparatorNaturalWonders", StripSeparatorNaturalWonders);
 	WeeveeDbgCall("AuditFrontMountainGaps", AuditFrontMountainGaps);
+	LogLakesWithRiverEdges("after wonders");
 	WeeveeDbgCall("MaybePlaceFujiHorses", function() MaybePlaceFujiHorses(start_plot_database) end);
 	WeeveeDbgCall("EnsureStartHillsFloor", EnsureStartHillsFloor);
 	WeeveeDbg("PlaceResources");
@@ -20864,6 +21747,7 @@ function StartPlotSystem()
 	WeeveeDbgCall("CullShortRivers", CullShortRivers);
 	WeeveeDbgCall("CullWestCoastShortRivers", CullWestCoastShortRivers);
 	WeeveeDbgCall("RepairDeadEndRivers", RepairDeadEndRivers);
+	LogLakesWithRiverEdges("after river passes");
 	WeeveeDbgCall("PurgeNearStartLakeFish", PurgeNearStartLakeFish);
 	WeeveeDbgCall("FixNorthUniqueLuxuries", FixNorthUniqueLuxuries);
 	WeeveeDbgCall("StripOasisWestSparseLux", StripOasisWestSparseLux);
@@ -20916,6 +21800,9 @@ function StartPlotSystem()
 	WeeveeDbgCall("EnsureRegionalLuxuryTarget", function() EnsureRegionalLuxuryTarget(start_plot_database) end);
 	WeeveeDbgCall("EnsureLuxuryQuota-postRegionalForce", EnsureLuxuryQuota);
 	WeeveeDbgCall("TrimLuxuryQuotaExcess", function() TrimLuxuryQuotaExcess(start_plot_database) end);
+	WeeveeDbgCall("CapCapitalLuxuries", function() CapCapitalLuxuries(start_plot_database) end);
+	WeeveeDbgCall("ShapeCapitalLuxuries", function() ShapeCapitalLuxuries(start_plot_database) end);
+	WeeveeDbgCall("MoveLuxuriesToFront", function() MoveLuxuriesToFront(start_plot_database) end);
 	WeeveeDbgCall("EnsureFurOnTundraHasForest", EnsureFurOnTundraHasForest);
 	WeeveeDbgCall("OasisJadeFlatDesertToHill", OasisJadeFlatDesertToHill);
 	WeeveeDbgCall("StripLuxuryOnTinyPeaksIslands", StripLuxuryOnTinyPeaksIslands);
@@ -20925,11 +21812,18 @@ function StartPlotSystem()
 	-- first sweep and can still edit plots.
 	WeeveeDbgCall("StripIllegalWaterResources-final", StripIllegalWaterResources);
 	WeeveeDbgCall("StripStandardSnowForests", StripStandardSnowForests);
+	WeeveeDbgCall("LogOasisLoneLuxuries", LogOasisLoneLuxuries);
+	WeeveeDbgCall("CheckCapitalDesert", CheckCapitalDesert);
+	WeeveeDbgCall("LogMountainRoll", LogMountainRoll);
 	WeeveeDbgCall("LogRegionalLuxuryCounts-preMirror", function() LogRegionalLuxuryCounts(start_plot_database, "pre-mirror-final") end);
 	WeeveeDbg("before mirror");
 	if DEF_MIRRORED == 1 then
 		WeeveeDbgCall("MirrorPlotsAfterResourcePlacement", MirrorPlotsAfterResourcePlacement);
 	end
+	WeeveeDbgCall("LogRiverCheck", LogRiverCheck);
+	WeeveeDbgCall("LogLandResourcesOnWater", LogLandResourcesOnWater);
+	WeeveeDbgCall("CheckFrontGap", CheckFrontGap);
+	LogLakesWithRiverEdges("after mirror", true);
 	WeeveeDbgCall("WeeveeDbgBarrierWidths", WeeveeDbgBarrierWidths);
 	WeeveeDbgCall("WeeveeDbgWaterCount", WeeveeDbgWaterCount);
 	WeeveeDbg("StartPlotSystem done");
@@ -21104,13 +21998,22 @@ function GenerateMap()
 			ResetWeeveeMapAttempt();
 		end
 		weeveeStartDistFail = false;
+		weeveeStartDesertFail = false;
+		weeveeFrontGapFail = false;
+		weeveeLastAttempt = (attempt == maxAttempts);
 		CoreGenerateMap();
 		local ok, nUnique, nDup, nTrip = LuxuryQuotaMet();
 		local wantU, wantD, wantT = ResolveLuxTargets();
 		if weeveeStartDistFail then
 			print("Start min-dist 7 rejected");
 		end
-		if ok and weeveeStartDistFail ~= true then
+		if weeveeStartDesertFail then
+			print("Capital desert limit rejected");
+		end
+		if weeveeFrontGapFail then
+			print("Front gap rejected");
+		end
+		if ok and weeveeStartDistFail ~= true and weeveeStartDesertFail ~= true and weeveeFrontGapFail ~= true then
 			print("Luxury quota accepted unique", nUnique, "/", wantU, "dup", nDup, "/", wantD, "trip", nTrip, "/", wantT);
 			return
 		end

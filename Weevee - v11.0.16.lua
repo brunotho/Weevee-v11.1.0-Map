@@ -3127,8 +3127,9 @@ function GetMapInitData(worldSize)
 			-- a multiple of 4 to be simultaneously exact-width and visually
 			-- straight (see the Standard-Diagonal width/smoothness investigation).
 			-- Small's 20 rows and 3 extra columns per side, scaled, with the
-			-- height rounded to a multiple of 4.
-			h = 4 * math.floor(ScaleCanvasRows(20, worldSize) / 4 + 0.5);
+			-- height rounded to a multiple of 4. At least 16: Duel's 12 rows
+			-- left no room for a start (it died on load).
+			h = math.max(16, 4 * math.floor(ScaleCanvasRows(20, worldSize) / 4 + 0.5));
 			w = w + 2 * ScaleCanvasCols(3, worldSize);
 		end
 		print("Map canvas:", w, "x", h, "(base", grid_size[1], "x", grid_size[2], ")");
@@ -12811,7 +12812,10 @@ function AssignStartingPlots:GenerateRegions(args)
 
 	print("Moveback: ", setback);
 
-	local setmiddle = DEF_TOPBOTTOM-1;
+	-- The top and bottom margins leave at least 8 rows for the start regions.
+	-- Only short maps (Duel, Diagonal below Small) need it; Duel-Diagonal
+	-- had a 0-row region and died on load.
+	local setmiddle = math.max(0, math.min(DEF_TOPBOTTOM - 1, math.floor((iH - 8) / 2)));
 
 	self.resource_setting = res; -- Each map script has to pass in parameter for Resource setting chosen by user.
 	self.method = 3; -- Flag the map as using a Rectangular division method.

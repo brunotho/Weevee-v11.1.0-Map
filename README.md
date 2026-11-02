@@ -17,6 +17,7 @@ Civ 5 teamer map.
 - On map sizes other than Small, Standard-Diagonal and Oasis maps are now sized in proportion to Small
 - 4v4 maps get more luxuries, with an extra group of luxuries shared by more players
 - 1v1 maps get fewer luxuries, and Duel maps fewer sea resources
+- Fixed Standard-Diagonal on Duel crashing when loading
 
 **Standard and Standard-Diagonal**
 - Front mountains now look more like 10.5, and their number varies per map
